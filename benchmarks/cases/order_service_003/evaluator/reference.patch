@@ -1,0 +1,12 @@
+diff --git a/order_service/inventory.py b/order_service/inventory.py
+--- a/order_service/inventory.py
++++ b/order_service/inventory.py
+@@ -11,6 +11,6 @@ class Inventory:
+         return self._stock.get(sku, 0)
+ 
+     def reserve(self, sku: str, quantity: int) -> None:
+-        self._stock[sku] = self.available(sku) - quantity
+-        if self._stock[sku] < 0:
++        if self.available(sku) < quantity:
+             raise OutOfStockError(f"insufficient stock for {sku}")
++        self._stock[sku] -= quantity

@@ -1,0 +1,35 @@
+case_id: order_service_003
+category: edge_case_regression_bug
+fixture:
+  id: order_service
+  version: order_service-v1
+issue: >-
+  A failed out-of-stock reservation is consuming inventory before it raises an
+  error. Make failed reservations leave stock unchanged while preserving
+  successful reservations, including reservations for all remaining stock.
+runnable_entry_point:
+  argv: [python, -m, order_service.app]
+  cwd: repo
+tests:
+  public:
+    argv: [python, -m, unittest, discover, -s, tests, -v]
+    cwd: repo
+  evaluator:
+    argv: [python, -m, unittest, discover, -s, hidden_tests, -v]
+    cwd: evaluator
+paths:
+  allowed:
+    - order_service/inventory.py
+  forbidden:
+    - .git
+    - .env
+    - tests
+    - evaluator
+limits:
+  wall_time_seconds: 60
+  tool_calls: 20
+  repair_iterations: 2
+expected_behavior:
+  - An out-of-stock reservation raises `OutOfStockError` without changing stock.
+  - A successful reservation subtracts exactly the requested quantity.
+  - Reserving all remaining stock succeeds and leaves zero available.
