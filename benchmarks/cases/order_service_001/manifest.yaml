@@ -1,0 +1,36 @@
+case_id: order_service_001
+category: local_logic_bug
+fixture:
+  id: order_service
+  version: order_service-v1
+issue: >-
+  Bulk discounts are not applied when an order subtotal is exactly $100.00.
+  Apply the existing 10% bulk discount to subtotals of $100.00 or more while
+  preserving current behavior below the threshold.
+runnable_entry_point:
+  argv: [python, -m, order_service.app]
+  cwd: repo
+tests:
+  public:
+    argv: [python, -m, unittest, discover, -s, tests, -v]
+    cwd: repo
+  evaluator:
+    argv: [python, -m, unittest, discover, -s, evaluator/hidden_tests, -v]
+    cwd: .
+paths:
+  allowed:
+    - order_service/pricing.py
+  forbidden:
+    - .git
+    - .env
+    - tests
+    - evaluator
+limits:
+  wall_time_seconds: 60
+  tool_calls: 20
+  repair_iterations: 2
+expected_behavior:
+  - A subtotal of exactly $100.00 receives the existing 10% bulk discount.
+  - Subtotals above $100.00 continue to receive the discount.
+  - Subtotals below $100.00 remain unchanged.
+
