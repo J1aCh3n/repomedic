@@ -1,3 +1,7 @@
 __pycache__/
 *.py[cod]
 .phase2-validation/
+.coverage
+.pytest_cache/
+runs/
+tests/.tmp/

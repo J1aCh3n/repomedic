@@ -1,8 +1,7 @@
 # RepoMedic benchmarks
 
-The current benchmark implementation is deliberately limited to the first
-fixture vertical slice. It does not yet include workspace reset, sandboxing,
-policy enforcement, artifact capture, or Agent orchestration.
+The current benchmark implementation includes the first fixture vertical slice
+and deterministic harness. Agent orchestration has not yet been implemented.
 
 ## Layout
 
@@ -51,3 +50,8 @@ running the evaluator command.
 
 `evaluator/reference.patch` is maintainer-only evidence for the fixture gate.
 It is not an exact-patch scoring target and must not be exposed to the Agent.
+
+The harness copies only `repo/` into a disposable run workspace. Evaluator tests
+are mounted into a separate Docker container path only during deterministic
+evaluation, while the repaired workspace is mounted read-only. See the root
+README for harness commands and security limits.

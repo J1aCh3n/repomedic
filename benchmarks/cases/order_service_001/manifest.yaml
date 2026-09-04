@@ -15,8 +15,8 @@ tests:
     argv: [python, -m, unittest, discover, -s, tests, -v]
     cwd: repo
   evaluator:
-    argv: [python, -m, unittest, discover, -s, evaluator/hidden_tests, -v]
-    cwd: .
+    argv: [python, -m, unittest, discover, -s, hidden_tests, -v]
+    cwd: evaluator
 paths:
   allowed:
     - order_service/pricing.py
@@ -33,4 +33,3 @@ expected_behavior:
   - A subtotal of exactly $100.00 receives the existing 10% bulk discount.
   - Subtotals above $100.00 continue to receive the discount.
   - Subtotals below $100.00 remain unchanged.
-

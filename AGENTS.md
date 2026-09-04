@@ -56,6 +56,10 @@ When the user authorizes an implementation phase, implement only that phase and 
 - Make side-effecting operations idempotent or record enough state to prevent duplicate execution after checkpoint resume.
 - Keep prompts versioned and treat prompt changes as behavior changes that require regression testing.
 - Touch only files required by the active phase. Do not reformat or refactor unrelated code.
+- After each requested task or implementation phase is complete and its relevant
+  verification passes, create one scoped local Git commit so the result can be
+  rolled back cleanly. Do not commit incomplete or failing work, and do not push
+  unless the user explicitly requests it.
 
 ## Required test layers
 

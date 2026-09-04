@@ -1,7 +1,7 @@
 # RepoMedic
 
-> Early implementation. The first fixture vertical slice is complete; the
-> deterministic harness and Agent graph have not been implemented.
+> Early implementation. The fixture vertical slice and deterministic harness
+> are complete; the Agent graph has not been implemented.
 
 RepoMedic is a proposed LangGraph-based multi-agent coding system that turns a small repository issue into a tested patch and an auditable evidence bundle. It is intended to extend the ideas explored in [`langgraph_file_editor`](../langgraph_file_editor/) from controlled file operations to repository-level diagnosis, implementation, testing, reflection, and human approval.
 
@@ -285,7 +285,7 @@ No later phase should begin merely to make the directory tree look complete. Eac
 
 ## Current implementation status
 
-Phase 2 now contains one Python fixture and one reproducible faulty case:
+Phase 2 contains one Python fixture and one reproducible faulty case:
 
 - `benchmarks/fixtures/order_service/` is the clean `order_service-v1` baseline;
 - `benchmarks/cases/order_service_001/repo/` contains an exact-threshold bulk
@@ -299,3 +299,57 @@ The fixture gate has been exercised locally: the clean baseline passes, the
 faulty case fails only the intended threshold checks, and the reference repair
 passes both public and evaluator tests. See [`benchmarks/README.md`](benchmarks/README.md)
 for the exact commands and current boundary.
+
+Phase 3 adds a deterministic harness with no model dependency:
+
+- strict YAML manifest parsing into typed dataclass contracts;
+- `prepare_case()` to create a fresh run directory and copy only the Agent-visible
+  repository into its disposable workspace;
+- `evaluate()` to enforce path policy before execution, run fixed public and
+  evaluator commands, re-check policy, and assign a typed status;
+- a Docker runner with no network, a read-only root filesystem, read-only bind
+  mounts, a non-root user, dropped Linux capabilities, `no-new-privileges`, and
+  CPU, memory, PID, temporary-storage, and wall-time limits;
+- SHA-256 change detection, allowlist/denylist checks, unified diff generation,
+  secret redaction, atomic JSON/text artifact writes, and JSONL trace events;
+- duplicate-evaluation prevention so a completed run cannot silently execute
+  its side effects twice.
+
+The Docker image is pinned by digest. The harness never falls back to an
+unrestricted host subprocess when Docker is unavailable and uses `--pull never`
+to prevent implicit network access. Missing Docker infrastructure is recorded as
+`infrastructure_error`.
+
+### Install and test the harness
+
+```powershell
+python -m pip install -e .
+python -m unittest discover -s tests -v
+```
+
+Default tests use scripted process results and require neither Docker nor a live
+model/API key.
+
+### Run the faulty case
+
+With Docker Desktop running:
+
+```powershell
+python -m repomedic run-case benchmarks/cases/order_service_001
+```
+
+The expected status is `tests_failed`: the harness ran correctly and preserved
+the intentionally faulty input. Evidence is written below
+`runs/order_service_001/<run-id>/`.
+
+### Reproduce the harness gate
+
+The maintainer-only gate applies the known one-line repair inside the prepared
+workspace and then runs the same Docker evaluation path:
+
+```powershell
+python -m scripts.validate_phase3
+```
+
+The expected status is `verified`. This script is validation infrastructure; it
+is not available to a repair Agent and does not change the source benchmark.

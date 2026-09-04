@@ -1,0 +1,62 @@
+from pathlib import Path
+from typing import Any
+import json
+import os
+import re
+
+from repomedic.workspace import resolve_within
+
+
+_ASSIGNMENT_SECRET = re.compile(
+    r"(?i)\b(api[_-]?key|token|secret|password|authorization)\b(\s*[:=]\s*)([^\s,;]+)"
+)
+_BEARER_SECRET = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
+_PROVIDER_TOKEN = re.compile(r"\b(?:sk|gh[pousr])_[A-Za-z0-9_-]{20,}\b")
+
+
+def redact_text(text: str) -> str:
+    redacted = _ASSIGNMENT_SECRET.sub(r"\1\2[REDACTED]", text)
+    redacted = _BEARER_SECRET.sub("Bearer [REDACTED]", redacted)
+    return _PROVIDER_TOKEN.sub("[REDACTED]", redacted)
+
+
+def _sanitize(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact_text(value)
+    if isinstance(value, dict):
+        return {str(key): _sanitize(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_sanitize(item) for item in value]
+    return value
+
+
+class ArtifactWriter:
+    def __init__(self, run_dir: Path) -> None:
+        self.run_dir = run_dir.resolve()
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+
+    def _atomic_write(self, name: str, content: str) -> None:
+        path = resolve_within(self.run_dir, name)
+        if path.parent != self.run_dir:
+            raise ValueError("artifacts must be direct children of the run directory")
+        temporary = path.with_name(f".{path.name}.tmp")
+        temporary.write_text(content, encoding="utf-8", newline="\n")
+        os.replace(temporary, path)
+
+    def write_json(self, name: str, value: Any) -> None:
+        content = json.dumps(_sanitize(value), indent=2, sort_keys=True)
+        self._atomic_write(name, f"{content}\n")
+
+    def write_text(self, name: str, content: str) -> None:
+        self._atomic_write(name, redact_text(content))
+
+    def append_trace(self, event: str, data: dict[str, Any]) -> None:
+        path = resolve_within(self.run_dir, "trace.jsonl")
+        record = json.dumps(
+            _sanitize({"event": event, "data": data}),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        with path.open("a", encoding="utf-8", newline="\n") as stream:
+            stream.write(f"{record}\n")
+

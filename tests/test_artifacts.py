@@ -1,0 +1,33 @@
+from pathlib import Path
+import json
+import unittest
+
+from repomedic.artifacts import ArtifactWriter, redact_text
+from tests.helpers import temporary_directory
+
+
+class ArtifactTests(unittest.TestCase):
+    def test_redacts_common_secret_forms(self) -> None:
+        text = "API_KEY=abc123 token=ghp_abcdefghijklmnopqrstuvwxyz123456"
+
+        redacted = redact_text(text)
+
+        self.assertNotIn("abc123", redacted)
+        self.assertNotIn("ghp_", redacted)
+        self.assertIn("[REDACTED]", redacted)
+
+    def test_writes_sanitized_json_and_trace(self) -> None:
+        with temporary_directory() as temp_dir:
+            writer = ArtifactWriter(Path(temp_dir))
+            writer.write_json("result.json", {"stdout": "PASSWORD=hunter2"})
+            writer.append_trace("test_completed", {"authorization": "Bearer secret"})
+
+            result = json.loads((Path(temp_dir) / "result.json").read_text(encoding="utf-8"))
+            trace = (Path(temp_dir) / "trace.jsonl").read_text(encoding="utf-8")
+
+        self.assertNotIn("hunter2", result["stdout"])
+        self.assertNotIn("Bearer secret", trace)
+
+
+if __name__ == "__main__":
+    unittest.main()
