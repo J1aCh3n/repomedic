@@ -1,7 +1,8 @@
 # RepoMedic
 
-> Early implementation. The fixture vertical slice and deterministic harness
-> are complete; the Agent graph has not been implemented.
+> Early implementation. The fixture vertical slice, deterministic harness, and
+> first Agent graph are complete. The graph has deterministic scripted coverage;
+> a measured live-model benchmark has not been run yet.
 
 RepoMedic is a proposed LangGraph-based multi-agent coding system that turns a small repository issue into a tested patch and an auditable evidence bundle. It is intended to extend the ideas explored in [`langgraph_file_editor`](../langgraph_file_editor/) from controlled file operations to repository-level diagnosis, implementation, testing, reflection, and human approval.
 
@@ -353,3 +354,49 @@ python -m scripts.validate_phase3
 
 The expected status is `verified`. This script is validation infrastructure; it
 is not available to a repair Agent and does not change the source benchmark.
+
+## Phase 4 Agent graph
+
+The first LangGraph workflow now contains distinct Planner, Investigator, Coder,
+and Reviewer contracts. Python routing owns tool and repair budgets, validates
+every model response with Pydantic, runs only bounded repository operations, and
+does not expose evaluator-only files or an unrestricted shell to the model.
+
+The Coder proposes exact text replacements but cannot apply them directly. The
+graph pauses first, saves its state to `checkpoint.sqlite`, and accepts an
+explicit `approve`, `revise`, or `reject` decision. Approved changes are applied
+idempotently inside the disposable workspace. Public tests inform revision;
+evaluator-only tests run only after the Reviewer returns `pass`.
+
+Default tests use `ScriptedModel` and make no API calls. To start a live run,
+set `OPENAI_API_KEY` in the current environment and explicitly choose a model:
+
+```powershell
+repomedic run-agent benchmarks/cases/order_service_001 --model MODEL_ID
+```
+
+The command prints the run directory when it pauses. Inspect or resume it with:
+
+```powershell
+repomedic agent-status runs/order_service_001/RUN_ID
+repomedic decide-agent runs/order_service_001/RUN_ID approve
+```
+
+For the optional local control panel, run:
+
+```powershell
+repomedic serve-agent runs/order_service_001/RUN_ID
+```
+
+Then open `http://127.0.0.1:8765`. The server refuses non-loopback bindings,
+escapes model-controlled content, and protects approval posts with a per-process
+token. The CLI remains the source-of-truth interface.
+
+With Docker Desktop running, reproduce the complete scripted-model graph gate:
+
+```powershell
+python -m scripts.validate_phase4
+```
+
+The expected status is `verified`. This gate uses fixed model responses, pauses
+at the real approval node, and spends no API credits.

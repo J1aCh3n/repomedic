@@ -4,7 +4,11 @@ These instructions apply to the entire `repomedic` directory tree.
 
 ## Current status
 
-RepoMedic is in preflight. `README.md` is the current design authority. Do not claim that any proposed feature, benchmark, metric, or safety property has been implemented until current code and saved evidence prove it.
+RepoMedic has completed the fixture, deterministic harness, and first Agent graph
+phases. `README.md` is the current design authority. The initial benchmark and
+long-term memory phases are not implemented. Do not claim that any proposed
+feature, benchmark, metric, or safety property has been implemented until current
+code and saved evidence prove it.
 
 When the user authorizes an implementation phase, implement only that phase and its required tests. Do not scaffold later phases speculatively.
 

@@ -7,7 +7,13 @@ name = "repomedic"
 version = "0.1.0"
 description = "A deterministic harness for auditable repository repair experiments"
 requires-python = ">=3.11"
-dependencies = ["PyYAML==6.0.3"]
+dependencies = [
+    "langgraph==1.2.9",
+    "langgraph-checkpoint-sqlite==3.0.3",
+    "openai==2.45.0",
+    "pydantic==2.13.4",
+    "PyYAML==6.0.3",
+]
 
 [project.scripts]
 repomedic = "repomedic.__main__:main"
