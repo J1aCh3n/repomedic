@@ -400,3 +400,32 @@ python -m scripts.validate_phase4
 
 The expected status is `verified`. This gate uses fixed model responses, pauses
 at the real approval node, and spends no API credits.
+
+## Four-case benchmark checkpoint
+
+The first development suite is declared in
+`benchmarks/suites/order_service_4.yaml`. Validate its clean fixture, four faulty
+or incomplete inputs, and four maintainer reference repairs without an API:
+
+```powershell
+python -m scripts.validate_suite benchmarks/suites/order_service_4.yaml
+```
+
+Start one live attempt per case with a frozen model and reasoning setting:
+
+```powershell
+repomedic start-benchmark benchmarks/suites/order_service_4.yaml `
+  --model gpt-5.6-terra --reasoning-effort low
+```
+
+Each case stops at its own approval checkpoint. Review and approve the printed
+run directories with `serve-agent` or `decide-agent`; no batch auto-approval is
+provided. Generate the current aggregate after decisions complete:
+
+```powershell
+repomedic benchmark-status runs/benchmarks/order_service_4/BENCHMARK_RUN_ID
+```
+
+The generated summary includes every declared case, including failures and
+pending approvals. It records statuses, token counts, model/tool calls, and
+latency from run artifacts; it does not insert hand-written success numbers.

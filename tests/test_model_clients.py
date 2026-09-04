@@ -48,7 +48,9 @@ class ModelClientTests(unittest.TestCase):
 
     def test_openai_adapter_uses_responses_structured_parse_without_storage(self) -> None:
         client = FakeOpenAI()
-        model = OpenAIResponsesModel("test-model", client=client)
+        model = OpenAIResponsesModel(
+            "test-model", reasoning_effort="low", client=client
+        )
 
         result = model.generate(
             agent="planner",
@@ -60,6 +62,7 @@ class ModelClientTests(unittest.TestCase):
         self.assertEqual(result.output.repair_steps[0], "Use an inclusive comparison.")
         self.assertIs(client.responses.arguments["text_format"], PlanReport)
         self.assertFalse(client.responses.arguments["store"])
+        self.assertEqual(client.responses.arguments["reasoning"], {"effort": "low"})
         self.assertEqual(result.usage.total_tokens, 15)
 
 

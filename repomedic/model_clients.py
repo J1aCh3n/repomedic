@@ -1,7 +1,7 @@
 from collections import deque
 from dataclasses import dataclass
 from time import monotonic
-from typing import Any, Generic, Protocol, TypeVar
+from typing import Any, Generic, Literal, Protocol, TypeVar
 import json
 
 from openai import OpenAI, OpenAIError
@@ -84,12 +84,14 @@ class OpenAIResponsesModel:
         model_id: str,
         *,
         max_output_tokens: int = 4000,
+        reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"] | None = None,
         client: OpenAI | None = None,
     ) -> None:
         if not model_id.strip():
             raise ValueError("model_id must be non-empty")
         self.model_id = model_id
         self.max_output_tokens = max_output_tokens
+        self.reasoning_effort = reasoning_effort
         self.client = client or OpenAI()
 
     def generate(
@@ -101,6 +103,9 @@ class OpenAIResponsesModel:
         output_type: type[OutputT],
     ) -> ModelResult[OutputT]:
         started = monotonic()
+        request: dict[str, Any] = {}
+        if self.reasoning_effort is not None:
+            request["reasoning"] = {"effort": self.reasoning_effort}
         try:
             response = self.client.responses.parse(
                 model=self.model_id,
@@ -109,6 +114,7 @@ class OpenAIResponsesModel:
                 text_format=output_type,
                 max_output_tokens=self.max_output_tokens,
                 store=False,
+                **request,
             )
         except OpenAIError as error:
             raise ModelClientError(f"{agent} Responses API call failed: {error}") from error

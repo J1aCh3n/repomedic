@@ -550,6 +550,7 @@ class AgentGraphRunner:
             "usage.json",
             {
                 "model": self.model.model_id,
+                "reasoning_effort": getattr(self.model, "reasoning_effort", None),
                 "prompt_version": PROMPT_VERSION,
                 "model_calls": state["model_calls"],
                 "tool_calls": state["tool_calls"],
@@ -572,6 +573,7 @@ class AgentGraphRunner:
             "usage.json",
             {
                 "model": self.model.model_id,
+                "reasoning_effort": getattr(self.model, "reasoning_effort", None),
                 "prompt_version": PROMPT_VERSION,
                 "model_calls": state["model_calls"],
                 "tool_calls": state["tool_calls"],
@@ -632,6 +634,7 @@ class AgentGraphRunner:
         config_data = json.loads(config_path.read_text(encoding="utf-8"))
         config_data["agent_graph"] = {
             "model": self.model.model_id,
+            "reasoning_effort": getattr(self.model, "reasoning_effort", None),
             "prompt_version": PROMPT_VERSION,
             "checkpoint": "checkpoint.sqlite",
         }

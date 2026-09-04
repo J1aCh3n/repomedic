@@ -6,6 +6,8 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 
 from repomedic.agent_graph import AgentGraphRunner, AgentRunResult
 from repomedic.agent_schemas import ApprovalDecision
+from repomedic.benchmark import load_suite
+from repomedic.benchmark_run import start_benchmark, summarize_benchmark
 from repomedic.harness import DeterministicHarness
 from repomedic.model_clients import OpenAIResponsesModel, ScriptedModel
 from repomedic.sandbox import DEFAULT_DOCKER_IMAGE, DockerSandbox
@@ -28,6 +30,10 @@ def _parser() -> ArgumentParser:
     run_agent.add_argument("--runs-root", type=Path, default=Path("runs"))
     run_agent.add_argument("--run-id")
     run_agent.add_argument("--model", required=True)
+    run_agent.add_argument(
+        "--reasoning-effort",
+        choices=("none", "low", "medium", "high", "xhigh", "max"),
+    )
     run_agent.add_argument("--docker-image", default=DEFAULT_DOCKER_IMAGE)
 
     decide = subparsers.add_parser(
@@ -49,6 +55,29 @@ def _parser() -> ArgumentParser:
     serve.add_argument("run_dir", type=Path)
     serve.add_argument("--docker-image", default=DEFAULT_DOCKER_IMAGE)
     serve.add_argument("--port", type=int, default=8765)
+
+    start_benchmark_parser = subparsers.add_parser(
+        "start-benchmark", help="start every case in a suite and pause for approval"
+    )
+    start_benchmark_parser.add_argument("suite", type=Path)
+    start_benchmark_parser.add_argument("--model", required=True)
+    start_benchmark_parser.add_argument(
+        "--reasoning-effort",
+        choices=("none", "low", "medium", "high", "xhigh", "max"),
+        default="low",
+    )
+    start_benchmark_parser.add_argument(
+        "--runs-root", type=Path, default=Path("runs") / "benchmarks"
+    )
+    start_benchmark_parser.add_argument("--run-id")
+    start_benchmark_parser.add_argument(
+        "--docker-image", default=DEFAULT_DOCKER_IMAGE
+    )
+
+    benchmark_status = subparsers.add_parser(
+        "benchmark-status", help="aggregate a checkpointed benchmark run"
+    )
+    benchmark_status.add_argument("run_dir", type=Path)
     return parser
 
 
@@ -62,7 +91,7 @@ def _checkpoint_path(run_dir: Path) -> Path:
     return checkpoint
 
 
-def _configured_model(run_dir: Path) -> str:
+def _configured_agent(run_dir: Path) -> tuple[str, str | None]:
     config_path = run_dir.resolve() / "config.json"
     try:
         config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -73,7 +102,10 @@ def _configured_model(run_dir: Path) -> str:
         ) from error
     if not isinstance(model, str) or not model.strip():
         raise ValueError(f"run has no valid Agent model configuration: {config_path}")
-    return model
+    effort = config["agent_graph"].get("reasoning_effort")
+    if effort is not None and effort not in {"none", "low", "medium", "high", "xhigh", "max"}:
+        raise ValueError(f"run has an invalid reasoning effort: {effort!r}")
+    return model, effort
 
 
 def _print_agent_result(result: AgentRunResult) -> None:
@@ -87,10 +119,10 @@ def _print_agent_result(result: AgentRunResult) -> None:
 
 
 def _openai_runner(
-    *, model: str, image: str, saver: SqliteSaver
+    *, model: str, reasoning_effort: str | None, image: str, saver: SqliteSaver
 ) -> AgentGraphRunner:
     return AgentGraphRunner(
-        OpenAIResponsesModel(model),
+        OpenAIResponsesModel(model, reasoning_effort=reasoning_effort),
         DeterministicHarness(sandbox=DockerSandbox(image=image)),
         saver,
     )
@@ -115,7 +147,11 @@ def main() -> None:
         database = prepared.layout.run_dir / "checkpoint.sqlite"
         with SqliteSaver.from_conn_string(str(database)) as saver:
             result = AgentGraphRunner(
-                OpenAIResponsesModel(args.model), harness, saver
+                OpenAIResponsesModel(
+                    args.model, reasoning_effort=args.reasoning_effort
+                ),
+                harness,
+                saver,
             ).start(prepared)
         _print_agent_result(result)
         raise SystemExit(
@@ -123,9 +159,11 @@ def main() -> None:
         )
     if args.command == "decide-agent":
         database = _checkpoint_path(args.run_dir)
+        model, effort = _configured_agent(args.run_dir)
         with SqliteSaver.from_conn_string(str(database)) as saver:
             runner = _openai_runner(
-                model=_configured_model(args.run_dir),
+                model=model,
+                reasoning_effort=effort,
                 image=args.docker_image,
                 saver=saver,
             )
@@ -149,15 +187,42 @@ def main() -> None:
         if not 1 <= args.port <= 65535:
             raise ValueError("port must be between 1 and 65535")
         database = _checkpoint_path(args.run_dir)
+        model, effort = _configured_agent(args.run_dir)
         with SqliteSaver.from_conn_string(str(database)) as saver:
             runner = _openai_runner(
-                model=_configured_model(args.run_dir),
+                model=model,
+                reasoning_effort=effort,
                 image=args.docker_image,
                 saver=saver,
             )
             serve_control_panel(
                 runner, run_id=args.run_dir.resolve().name, port=args.port
             )
+        return
+    if args.command == "start-benchmark":
+        model = OpenAIResponsesModel(
+            args.model, reasoning_effort=args.reasoning_effort
+        )
+        started = start_benchmark(
+            load_suite(args.suite),
+            model=model,
+            harness=DeterministicHarness(
+                sandbox=DockerSandbox(image=args.docker_image)
+            ),
+            runs_root=args.runs_root,
+            run_id=args.run_id,
+        )
+        print(f"run_dir={started.run_dir}")
+        for result in started.case_results:
+            print(f"{result.case_id}={result.status} {result.run_dir}")
+        raise SystemExit(
+            0 if all(item.awaiting_approval for item in started.case_results) else 1
+        )
+    if args.command == "benchmark-status":
+        summary = summarize_benchmark(args.run_dir)
+        print(f"complete={str(summary['complete']).lower()}")
+        print(f"verified={summary['verified']}/{summary['case_count']}")
+        print(f"summary={args.run_dir.resolve() / 'summary.md'}")
         return
 
 

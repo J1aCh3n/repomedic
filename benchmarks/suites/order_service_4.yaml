@@ -1,0 +1,8 @@
+suite_id: order_service_4
+description: Four development cases covering the initial order-service task types.
+split: development
+cases:
+  - order_service_001
+  - order_service_002
+  - order_service_003
+  - order_service_004
