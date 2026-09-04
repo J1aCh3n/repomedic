@@ -1,0 +1,36 @@
+case_id: order_service_002
+category: cross_module_contract_bug
+fixture:
+  id: order_service
+  version: order_service-v1
+issue: >-
+  Newly placed orders are exposing integer IDs instead of the established
+  `order-N` string format. Restore string order IDs such as `order-1`, keep IDs
+  sequential as orders are saved, and preserve lookup by the returned ID.
+runnable_entry_point:
+  argv: [python, -m, order_service.app]
+  cwd: repo
+tests:
+  public:
+    argv: [python, -m, unittest, discover, -s, tests, -v]
+    cwd: repo
+  evaluator:
+    argv: [python, -m, unittest, discover, -s, hidden_tests, -v]
+    cwd: evaluator
+paths:
+  allowed:
+    - order_service/service.py
+    - order_service/storage.py
+  forbidden:
+    - .git
+    - .env
+    - tests
+    - evaluator
+limits:
+  wall_time_seconds: 60
+  tool_calls: 20
+  repair_iterations: 2
+expected_behavior:
+  - The first stored order has the string ID `order-1`.
+  - Later stored orders receive sequential `order-N` string IDs.
+  - Looking up an order by its returned ID returns that order.
