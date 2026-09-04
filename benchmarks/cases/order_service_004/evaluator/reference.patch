@@ -1,0 +1,59 @@
+diff --git a/order_service/inventory.py b/order_service/inventory.py
+--- a/order_service/inventory.py
++++ b/order_service/inventory.py
+@@ -12,5 +12,10 @@ class Inventory:
+     def reserve(self, sku: str, quantity: int) -> None:
+         if self.available(sku) < quantity:
+             raise OutOfStockError(f"insufficient stock for {sku}")
+         self._stock[sku] -= quantity
++
++    def release(self, sku: str, quantity: int) -> None:
++        if quantity <= 0:
++            raise ValueError("quantity must be positive")
++        self._stock[sku] = self.available(sku) + quantity
+ 
+diff --git a/order_service/service.py b/order_service/service.py
+--- a/order_service/service.py
++++ b/order_service/service.py
+@@ -27,9 +27,18 @@ class OrderService:
+         order = Order(
+             order_id=self._store.next_order_id(),
+             sku=sku,
+             quantity=quantity,
+             total=calculate_total(self._catalog[sku], quantity),
+         )
+         self._store.save(order)
+         return order
++
++    def cancel_order(self, order_id: str) -> Order:
++        order = self._store.get(order_id)
++        if order is None:
++            raise ValueError(f"unknown order id: {order_id}")
++
++        self._inventory.release(order.sku, order.quantity)
++        self._store.delete(order_id)
++        return order
+ 
+diff --git a/order_service/storage.py b/order_service/storage.py
+--- a/order_service/storage.py
++++ b/order_service/storage.py
+@@ -4,12 +4,18 @@ from order_service.models import Order
+ class InMemoryOrderStore:
+     def __init__(self) -> None:
+         self._orders: dict[str, Order] = {}
++        self._next_id = 1
+ 
+     def next_order_id(self) -> str:
+-        return f"order-{len(self._orders) + 1}"
++        order_id = f"order-{self._next_id}"
++        self._next_id += 1
++        return order_id
+ 
+     def save(self, order: Order) -> None:
+         self._orders[order.order_id] = order
+ 
++    def delete(self, order_id: str) -> None:
++        self._orders.pop(order_id, None)
++
+     def get(self, order_id: str) -> Order | None:
+         return self._orders.get(order_id)
