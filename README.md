@@ -495,31 +495,35 @@ artifact accounting constant:
 - `multi_agent_review`: the full Planner, Investigator, Coder, and Reviewer
   graph can revise or replan within the recorded limits.
 
-Start the three matched runs with explicit modes, three independent attempts
-per case, and no memory database. This creates 36 case-runs per configuration
-and 108 case-runs across the three configurations; each proposal that reaches
-the approval gate must be inspected and decided separately:
+The original preflight targets all 12 development cases. To limit API and
+approval cost, the first configuration ablation uses the frozen, stratified
+`preflight_6` subset instead. It covers two cases per fixture and all four task
+categories, but it must not be reported as a complete `initial_12` result or as
+holdout evidence. Start the three matched memory-free runs with three
+independent attempts per case. This creates 18 case-runs per configuration and
+54 across these three arms; each proposal that reaches the approval gate must
+be inspected and decided separately:
 
 ```powershell
-repomedic start-benchmark benchmarks/suites/initial_12.yaml `
+repomedic start-benchmark benchmarks/suites/preflight_6.yaml `
   --model gpt-5.6-terra --reasoning-effort low `
-  --agent-mode single_agent --attempts 3 --run-id phase5-single-v2
-repomedic start-benchmark benchmarks/suites/initial_12.yaml `
+  --agent-mode single_agent --attempts 3 --run-id preflight6-single-v2
+repomedic start-benchmark benchmarks/suites/preflight_6.yaml `
   --model gpt-5.6-terra --reasoning-effort low `
-  --agent-mode multi_agent_no_review --attempts 3 --run-id phase5-no-review-v2
-repomedic start-benchmark benchmarks/suites/initial_12.yaml `
+  --agent-mode multi_agent_no_review --attempts 3 --run-id preflight6-no-review-v2
+repomedic start-benchmark benchmarks/suites/preflight_6.yaml `
   --model gpt-5.6-terra --reasoning-effort low `
-  --agent-mode multi_agent_review --attempts 3 --run-id phase5-review-v2
+  --agent-mode multi_agent_review --attempts 3 --run-id preflight6-review-v2
 ```
 
 After every case reaches a terminal status, generate the matched comparison:
 
 ```powershell
 repomedic compare-configurations `
-  runs/benchmarks/initial_12/phase5-single-v2 `
-  runs/benchmarks/initial_12/phase5-no-review-v2 `
-  runs/benchmarks/initial_12/phase5-review-v2 `
-  --output-dir runs/configuration-ablation/phase5-v2
+  runs/benchmarks/preflight_6/preflight6-single-v2 `
+  runs/benchmarks/preflight_6/preflight6-no-review-v2 `
+  runs/benchmarks/preflight_6/preflight6-review-v2 `
+  --output-dir runs/configuration-ablation/preflight-6-v2
 ```
 
 The comparator rejects incomplete runs, fewer than three attempts per case,
@@ -582,26 +586,27 @@ memory and with memory using identical model and reasoning settings. Benchmark
 runs retrieve from the frozen database but do not write new entries, preventing
 earlier cases or attempts from contaminating later ones. Do not run
 `memory-learn` against the frozen database while the treatment is in progress.
-A comparison on the current 12 development cases is development-set evidence
-only; it does not establish holdout generalization:
+A comparison on the selected six development cases is development-set evidence
+only; it does not establish performance on all 12 cases or holdout
+generalization:
 
 ```powershell
-repomedic start-benchmark benchmarks/suites/initial_12.yaml `
+repomedic start-benchmark benchmarks/suites/preflight_6.yaml `
   --model gpt-5.6-terra --reasoning-effort low `
   --agent-mode multi_agent_review --attempts 3 `
-  --run-id phase6-review-memory-v2 `
-  --memory-db runs/memory/phase6-frozen.sqlite
+  --run-id preflight6-review-memory-v2 `
+  --memory-db runs/memory/preflight6-frozen.sqlite
 ```
 
 After reviewing and deciding every case in both runs, generate the two benchmark
 summaries and the matched comparison:
 
 ```powershell
-repomedic benchmark-status runs/benchmarks/initial_12/phase5-review-v2
-repomedic benchmark-status runs/benchmarks/initial_12/phase6-review-memory-v2
-repomedic compare-memory runs/benchmarks/initial_12/phase5-review-v2 `
-  runs/benchmarks/initial_12/phase6-review-memory-v2 `
-  --output-dir runs/memory-ablation/phase6-v2
+repomedic benchmark-status runs/benchmarks/preflight_6/preflight6-review-v2
+repomedic benchmark-status runs/benchmarks/preflight_6/preflight6-review-memory-v2
+repomedic compare-memory runs/benchmarks/preflight_6/preflight6-review-v2 `
+  runs/benchmarks/preflight_6/preflight6-review-memory-v2 `
+  --output-dir runs/memory-ablation/preflight-6-v2
 ```
 
 `compare-memory` refuses incomplete or unmatched runs, a baseline with memory
@@ -610,16 +615,16 @@ snapshots, invalid context-budget accounting, a mutable treatment corpus,
 same-case memory, or a treatment that retrieved no entries. It derives pass@1,
 pass@3, verified-rate, and usage deltas from saved artifacts.
 
-After all four 36-run arms are terminal, generate the single strict preflight
-comparison (144 case-runs total):
+After all four 18-run arms are terminal, generate the unified reduced preflight
+comparison (72 case-runs total):
 
 ```powershell
 repomedic compare-preflight `
-  runs/benchmarks/initial_12/phase5-single-v2 `
-  runs/benchmarks/initial_12/phase5-no-review-v2 `
-  runs/benchmarks/initial_12/phase5-review-v2 `
-  runs/benchmarks/initial_12/phase6-review-memory-v2 `
-  --output-dir runs/preflight-comparison/initial-12-v2
+  runs/benchmarks/preflight_6/preflight6-single-v2 `
+  runs/benchmarks/preflight_6/preflight6-no-review-v2 `
+  runs/benchmarks/preflight_6/preflight6-review-v2 `
+  runs/benchmarks/preflight_6/preflight6-review-memory-v2 `
+  --output-dir runs/preflight-comparison/preflight-6-v2
 ```
 
 The command first applies the strict three-arm configuration checks, then the

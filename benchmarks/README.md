@@ -17,6 +17,7 @@ the remediated v2 prompt and protocol.
 - `suites/order_service_4.yaml` preserves the first measured checkpoint.
 - `suites/initial_8.yaml` freezes the expanded eight-case suite.
 - `suites/initial_12.yaml` freezes the complete initial benchmark dataset.
+- `suites/preflight_6.yaml` freezes the reduced configuration-ablation subset.
 
 ## Four-case development suite
 
@@ -73,6 +74,28 @@ python -m scripts.validate_suite benchmarks/suites/initial_12.yaml
 ```
 
 The command writes evidence below `runs/suite-gates/initial_12/<run-id>/`.
+
+## Six-case configuration ablation subset
+
+`preflight_6` reduces approval load while preserving two cases from each
+fixture and coverage of all four task categories:
+
+| Case | Category |
+| --- | --- |
+| `order_service_001` | local logic bug |
+| `order_service_004` | small feature |
+| `task_scheduler_006` | cross-module contract bug |
+| `task_scheduler_008` | small feature |
+| `document_pipeline_010` | cross-module contract bug |
+| `document_pipeline_011` | edge/regression bug |
+
+This is a stratified development ablation, not a complete `initial_12` result
+or holdout evidence. With three attempts across four configurations it contains
+72 case-runs. Validate its fixture contracts with:
+
+```powershell
+python -m scripts.validate_suite benchmarks/suites/preflight_6.yaml
+```
 
 With Docker Desktop running, reproduce every faulty state and reference repair:
 

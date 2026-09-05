@@ -1,3 +1,4 @@
+from collections import Counter
 from pathlib import Path
 import unittest
 
@@ -8,6 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SUITE_PATH = PROJECT_ROOT / "benchmarks" / "suites" / "order_service_4.yaml"
 EIGHT_CASE_SUITE_PATH = PROJECT_ROOT / "benchmarks" / "suites" / "initial_8.yaml"
 TWELVE_CASE_SUITE_PATH = PROJECT_ROOT / "benchmarks" / "suites" / "initial_12.yaml"
+PREFLIGHT_SUITE_PATH = PROJECT_ROOT / "benchmarks" / "suites" / "preflight_6.yaml"
 
 EXPECTED_CATEGORIES = {
     "local_logic_bug",
@@ -67,6 +69,34 @@ class BenchmarkSuiteTests(unittest.TestCase):
         )
         for categories in categories_by_fixture.values():
             self.assertEqual(categories, EXPECTED_CATEGORIES)
+
+    def test_preflight_suite_is_the_frozen_stratified_six_case_subset(self) -> None:
+        suite = load_suite(PREFLIGHT_SUITE_PATH)
+
+        self.assertEqual(suite.suite_id, "preflight_6")
+        self.assertEqual(
+            tuple(case.case_id for case in suite.cases),
+            (
+                "order_service_001",
+                "order_service_004",
+                "task_scheduler_006",
+                "task_scheduler_008",
+                "document_pipeline_010",
+                "document_pipeline_011",
+            ),
+        )
+        self.assertEqual(
+            Counter(case.manifest.fixture.fixture_id for case in suite.cases),
+            {
+                "order_service": 2,
+                "task_scheduler": 2,
+                "document_pipeline": 2,
+            },
+        )
+        self.assertEqual(
+            {case.manifest.category for case in suite.cases},
+            EXPECTED_CATEGORIES,
+        )
 
     def test_rejects_duplicate_case_ids(self) -> None:
         with self.assertRaisesRegex(SuiteError, "duplicate"):

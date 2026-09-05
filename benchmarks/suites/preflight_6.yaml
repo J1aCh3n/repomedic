@@ -1,0 +1,10 @@
+suite_id: preflight_6
+description: Stratified six-case development ablation across three fixtures.
+split: development
+cases:
+  - order_service_001
+  - order_service_004
+  - task_scheduler_006
+  - task_scheduler_008
+  - document_pipeline_010
+  - document_pipeline_011
