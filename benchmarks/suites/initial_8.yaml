@@ -1,0 +1,12 @@
+suite_id: initial_8
+description: Eight development cases across the order-service and task-scheduler fixtures.
+split: development
+cases:
+  - order_service_001
+  - order_service_002
+  - order_service_003
+  - order_service_004
+  - task_scheduler_005
+  - task_scheduler_006
+  - task_scheduler_007
+  - task_scheduler_008

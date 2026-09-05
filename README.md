@@ -1,8 +1,8 @@
 # RepoMedic
 
-> Early implementation. The fixture vertical slice, deterministic harness, and
-> first Agent graph are complete. The graph has deterministic scripted coverage;
-> a measured live-model benchmark has not been run yet.
+> Early implementation. The deterministic harness and first Agent graph are
+> complete. Eight development cases now span two fixtures; the first four have
+> one recorded live-model attempt each.
 
 RepoMedic is a proposed LangGraph-based multi-agent coding system that turns a small repository issue into a tested patch and an auditable evidence bundle. It is intended to extend the ideas explored in [`langgraph_file_editor`](../langgraph_file_editor/) from controlled file operations to repository-level diagnosis, implementation, testing, reflection, and human approval.
 
@@ -429,3 +429,23 @@ repomedic benchmark-status runs/benchmarks/order_service_4/BENCHMARK_RUN_ID
 The generated summary includes every declared case, including failures and
 pending approvals. It records statuses, token counts, model/tool calls, and
 latency from run artifacts; it does not insert hand-written success numbers.
+
+## Eight-case benchmark checkpoint
+
+Cases 005-008 add a `task_scheduler` fixture with local-logic,
+cross-module-contract, edge/regression, and small-feature tasks. The eight-case
+suite keeps the original four-case suite immutable so its recorded result stays
+reproducible.
+
+Validate all eight inputs and reference repairs without an API call:
+
+```powershell
+python -m scripts.validate_suite benchmarks/suites/initial_8.yaml
+```
+
+Start the next measured run with the same protocol used for the first four:
+
+```powershell
+repomedic start-benchmark benchmarks/suites/initial_8.yaml `
+  --model gpt-5.6-terra --reasoning-effort low
+```

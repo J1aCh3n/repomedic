@@ -1,18 +1,19 @@
 # RepoMedic benchmarks
 
-The current benchmark implementation includes the first four-case development
-suite, deterministic harness, and Agent graph. Live-model results have not been
-recorded yet.
+The current benchmark implementation includes an eight-case development suite,
+deterministic harness, and Agent graph. The first four cases have recorded
+live-model results; cases 005-008 are ready for their first measured run.
 
 ## Layout
 
-- `fixtures/order_service/` is the clean `order_service-v1` baseline.
+- `fixtures/order_service/` and `fixtures/task_scheduler/` are clean baselines.
 - `cases/<case-id>/repo/` is the faulty or feature-incomplete repository visible
   to an Agent.
 - `cases/<case-id>/evaluator/` must not be copied or mounted into an Agent
   workspace.
 - `cases/<case-id>/manifest.yaml` defines each case contract.
-- `suites/order_service_4.yaml` freezes the first development suite.
+- `suites/order_service_4.yaml` preserves the first measured checkpoint.
+- `suites/initial_8.yaml` freezes the expanded eight-case suite.
 
 ## Four-case development suite
 
@@ -26,13 +27,34 @@ recorded yet.
 All four are development cases. They may be used to debug the runner or prompts
 and therefore must not later be relabeled as untouched holdout evidence.
 
+## Eight-case development suite
+
+The second fixture adds the same four task categories without modifying the
+first measured checkpoint.
+
+| Case | Category | Target behavior |
+| --- | --- | --- |
+| `task_scheduler_005` | local logic bug | Allow adjacent half-open task intervals |
+| `task_scheduler_006` | cross-module contract bug | Normalize parsed timestamps to UTC |
+| `task_scheduler_007` | edge/regression bug | Failed requests do not consume task IDs |
+| `task_scheduler_008` | small feature | Atomic rescheduling across policy, scheduler, and storage |
+
+All eight cases remain development cases. Validate both clean fixtures, all
+faulty/incomplete inputs, and all maintainer reference repairs with:
+
+```powershell
+python -m scripts.validate_suite benchmarks/suites/initial_8.yaml
+```
+
+The command writes its evidence below `runs/suite-gates/initial_8/<run-id>/`.
+
 With Docker Desktop running, reproduce every faulty state and reference repair:
 
 ```powershell
 python -m scripts.validate_suite benchmarks/suites/order_service_4.yaml
 ```
 
-The command writes a generated `summary.json` and `summary.md` below
+The four-case command writes a generated `summary.json` and `summary.md` below
 `runs/suite-gates/order_service_4/<run-id>/`. A valid gate observes
 `tests_failed` for every input case and `verified` after every maintainer
 reference repair.
