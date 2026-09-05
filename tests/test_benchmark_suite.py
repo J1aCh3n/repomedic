@@ -7,6 +7,7 @@ from repomedic.benchmark import SuiteError, load_suite
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SUITE_PATH = PROJECT_ROOT / "benchmarks" / "suites" / "order_service_4.yaml"
 EIGHT_CASE_SUITE_PATH = PROJECT_ROOT / "benchmarks" / "suites" / "initial_8.yaml"
+TWELVE_CASE_SUITE_PATH = PROJECT_ROOT / "benchmarks" / "suites" / "initial_12.yaml"
 
 EXPECTED_CATEGORIES = {
     "local_logic_bug",
@@ -43,6 +44,26 @@ class BenchmarkSuiteTests(unittest.TestCase):
         self.assertEqual(
             set(categories_by_fixture),
             {"order_service", "task_scheduler"},
+        )
+        for categories in categories_by_fixture.values():
+            self.assertEqual(categories, EXPECTED_CATEGORIES)
+
+    def test_twelve_case_suite_has_four_categories_per_fixture(self) -> None:
+        suite = load_suite(TWELVE_CASE_SUITE_PATH)
+
+        self.assertEqual(suite.suite_id, "initial_12")
+        self.assertEqual(len(suite.cases), 12)
+
+        categories_by_fixture: dict[str, set[str]] = {}
+        for case in suite.cases:
+            fixture_id = case.manifest.fixture.fixture_id
+            categories_by_fixture.setdefault(fixture_id, set()).add(
+                case.manifest.category
+            )
+
+        self.assertEqual(
+            set(categories_by_fixture),
+            {"order_service", "task_scheduler", "document_pipeline"},
         )
         for categories in categories_by_fixture.values():
             self.assertEqual(categories, EXPECTED_CATEGORIES)

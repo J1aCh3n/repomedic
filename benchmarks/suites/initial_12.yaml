@@ -1,0 +1,16 @@
+suite_id: initial_12
+description: Twelve development cases across three small Python fixtures.
+split: development
+cases:
+  - order_service_001
+  - order_service_002
+  - order_service_003
+  - order_service_004
+  - task_scheduler_005
+  - task_scheduler_006
+  - task_scheduler_007
+  - task_scheduler_008
+  - document_pipeline_009
+  - document_pipeline_010
+  - document_pipeline_011
+  - document_pipeline_012

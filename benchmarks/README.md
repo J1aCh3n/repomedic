@@ -1,13 +1,14 @@
 # RepoMedic benchmarks
 
-The current benchmark implementation includes an eight-case development suite,
+The current benchmark implementation includes a twelve-case development suite,
 deterministic harness, and Agent graph. The preserved v1 staged result and its
 failure analysis are in `results/initial_8_20260905.md`; the current graph uses
 the remediated v2 prompt and protocol.
 
 ## Layout
 
-- `fixtures/order_service/` and `fixtures/task_scheduler/` are clean baselines.
+- `fixtures/order_service/`, `fixtures/task_scheduler/`, and
+  `fixtures/document_pipeline/` are clean baselines.
 - `cases/<case-id>/repo/` is the faulty or feature-incomplete repository visible
   to an Agent.
 - `cases/<case-id>/evaluator/` must not be copied or mounted into an Agent
@@ -15,6 +16,7 @@ the remediated v2 prompt and protocol.
 - `cases/<case-id>/manifest.yaml` defines each case contract.
 - `suites/order_service_4.yaml` preserves the first measured checkpoint.
 - `suites/initial_8.yaml` freezes the expanded eight-case suite.
+- `suites/initial_12.yaml` freezes the complete initial benchmark dataset.
 
 ## Four-case development suite
 
@@ -51,6 +53,26 @@ The command writes its evidence below `runs/suite-gates/initial_8/<run-id>/`.
 All current manifests reserve at least 43 bounded repository operations. That
 minimum covers the schema's maximum initial investigation and two direct repair
 iterations; repeated Reviewer replanning remains bounded by the same cap.
+
+## Twelve-case development suite
+
+The third fixture completes the planned four-category matrix.
+
+| Case | Category | Target behavior |
+| --- | --- | --- |
+| `document_pipeline_009` | local logic bug | Collapse mixed whitespace runs |
+| `document_pipeline_010` | cross-module contract bug | Preserve source paths across loading and export |
+| `document_pipeline_011` | edge/regression bug | Failed conversions leave destinations unchanged |
+| `document_pipeline_012` | small feature | Optional uppercase-title conversion across three layers |
+
+All twelve cases remain development cases. Validate all three clean fixtures,
+all faulty or incomplete inputs, and every maintainer reference repair with:
+
+```powershell
+python -m scripts.validate_suite benchmarks/suites/initial_12.yaml
+```
+
+The command writes evidence below `runs/suite-gates/initial_12/<run-id>/`.
 
 With Docker Desktop running, reproduce every faulty state and reference repair:
 

@@ -1,7 +1,7 @@
 # RepoMedic
 
 > Early implementation. The deterministic harness and first Agent graph are
-> complete. Eight development cases now span two fixtures. Their staged v1
+> complete. Twelve development cases now span three fixtures. Their staged v1
 > measurement exposed Reviewer-scope and failure-accounting defects that are
 > corrected in the current v2 protocol.
 
@@ -458,3 +458,22 @@ Reviewer revisions outside the manifest edit allowlist, records failed model
 and tool attempts, validates that tool budgets cover the declared direct repair
 path, and aligns hidden assertions with the manifest contract. These are
 protocol changes, so future v2 results must not be merged with the v1 rate.
+
+## Twelve-case benchmark dataset
+
+Cases 009-012 add the `document_pipeline` fixture and complete the planned
+three-fixture, four-category development matrix. The earlier four- and
+eight-case suites remain immutable checkpoints.
+
+Validate the complete dataset without an API call:
+
+```powershell
+python -m scripts.validate_suite benchmarks/suites/initial_12.yaml
+```
+
+Start a live run with the same frozen model settings used by earlier stages:
+
+```powershell
+repomedic start-benchmark benchmarks/suites/initial_12.yaml `
+  --model gpt-5.6-terra --reasoning-effort low
+```
