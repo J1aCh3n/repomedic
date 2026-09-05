@@ -97,6 +97,11 @@ or holdout evidence. With three attempts across four configurations it contains
 python -m scripts.validate_suite benchmarks/suites/preflight_6.yaml
 ```
 
+The completed live comparison is documented in
+[`results/preflight_6_ablation_20260905.md`](results/preflight_6_ablation_20260905.md).
+Its 71/72 aggregate verified result is development evidence only; the one
+failure was a deterministic edit-application error in the single-agent arm.
+
 With Docker Desktop running, reproduce every faulty state and reference repair:
 
 ```powershell

@@ -1,9 +1,10 @@
 # RepoMedic
 
 > Early implementation. The deterministic harness, configurable Agent graph,
-> and twelve-case development dataset are complete. Single-agent, no-review,
-> and review modes are implemented for a unified ablation, but the new live
-> comparison and matched memory experiment are not yet complete.
+> and twelve-case development dataset are complete. A stratified six-case,
+> four-configuration live development ablation is complete; it found no
+> measurable Reviewer or memory success-rate uplift on this saturated subset.
+> The full twelve-case comparison and held-out evaluation remain future work.
 
 RepoMedic is a proposed LangGraph-based multi-agent coding system that turns a small repository issue into a tested patch and an auditable evidence bundle. It is intended to extend the ideas explored in [`langgraph_file_editor`](../langgraph_file_editor/) from controlled file operations to repository-level diagnosis, implementation, testing, reflection, and human approval.
 
