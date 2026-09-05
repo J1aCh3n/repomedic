@@ -317,6 +317,7 @@ class AgentGraphTests(unittest.TestCase):
             )
             self.assertEqual(config["memory"]["retrieved_entry_ids"], ["prior-entry"])
             self.assertEqual(config["memory"]["context_budget_chars"], 1800)
+            self.assertTrue(config["memory"]["write_enabled"])
             self.assertGreater(config["memory"]["context_chars"], 0)
             self.assertEqual(config["memory"]["corpus"]["entry_count"], 1)
             self.assertEqual(
@@ -335,6 +336,33 @@ class AgentGraphTests(unittest.TestCase):
                 (Path(result.run_dir) / "memory.json").read_text(encoding="utf-8")
             )
             self.assertEqual(artifact["write"]["status"], "stored")
+
+    def test_read_only_memory_run_does_not_change_corpus(self) -> None:
+        with temporary_directory() as temp_dir:
+            sandbox = SequenceSandbox([True, True])
+            harness = DeterministicHarness(sandbox=sandbox)
+            prepared = harness.prepare_case(
+                CASE_ROOT, Path(temp_dir), run_id="read_only_memory_run"
+            )
+            store = StubMemoryStore(Path(temp_dir) / "memory.sqlite")
+            runner = AgentGraphRunner(
+                CapturingScriptedModel(script(reviews=["pass"])),
+                harness,
+                InMemorySaver(),
+                memory_store=store,
+                memory_write_enabled=False,
+            )
+
+            runner.start(prepared)
+            result = runner.resume(
+                "read_only_memory_run",
+                ApprovalDecision(action="approve", feedback=""),
+            )
+
+            self.assertEqual(result.status, "verified")
+            self.assertEqual(store.writes, [])
+            self.assertFalse((result.memory or {})["write_enabled"])
+            self.assertIsNone((result.memory or {})["write"])
 
     def test_verified_graph_run_writes_real_memory_entry(self) -> None:
         with temporary_directory() as temp_dir:

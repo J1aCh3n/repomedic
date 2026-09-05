@@ -1,10 +1,41 @@
 from pathlib import Path
+import json
 import unittest
 
-from repomedic.__main__ import _parser
+from repomedic.__main__ import _configured_agent, _parser
+from repomedic.prompts import PROMPT_VERSION
+from tests.helpers import temporary_directory
 
 
 class CliTests(unittest.TestCase):
+    def test_resume_preserves_read_only_memory_setting(self) -> None:
+        with temporary_directory() as temp_dir:
+            run_dir = Path(temp_dir)
+            (run_dir / "config.json").write_text(
+                json.dumps(
+                    {
+                        "agent_graph": {
+                            "model": "scripted",
+                            "reasoning_effort": None,
+                            "prompt_version": PROMPT_VERSION,
+                            "mode": "multi_agent_review",
+                        },
+                        "memory": {
+                            "enabled": True,
+                            "database": "memory.sqlite",
+                            "limit": 3,
+                            "context_budget_chars": 2400,
+                            "write_enabled": False,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            configured = _configured_agent(run_dir)
+
+            self.assertFalse(configured[5])
+
     def test_start_benchmark_accepts_repeated_case_filters(self) -> None:
         args = _parser().parse_args(
             [
@@ -98,6 +129,20 @@ class CliTests(unittest.TestCase):
         self.assertEqual(configurations.single_agent_run, Path("runs/single"))
         self.assertEqual(configurations.no_review_run, Path("runs/no-review"))
         self.assertEqual(configurations.review_run, Path("runs/review"))
+
+        preflight = _parser().parse_args(
+            [
+                "compare-preflight",
+                "runs/single",
+                "runs/no-review",
+                "runs/review",
+                "runs/memory",
+                "--output-dir",
+                "runs/preflight-comparison",
+            ]
+        )
+        self.assertEqual(preflight.memory_run, Path("runs/memory"))
+        self.assertEqual(preflight.output_dir, Path("runs/preflight-comparison"))
 
 
 if __name__ == "__main__":

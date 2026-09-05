@@ -24,6 +24,7 @@ from repomedic.memory import (
 )
 from repomedic.memory_ablation import compare_memory_ablation
 from repomedic.model_clients import OpenAIResponsesModel, ScriptedModel
+from repomedic.preflight_comparison import compare_preflight_configurations
 from repomedic.prompts import PROMPT_VERSION
 from repomedic.sandbox import DEFAULT_DOCKER_IMAGE, DockerSandbox
 from repomedic.web_ui import serve_control_panel
@@ -161,6 +162,16 @@ def _parser() -> ArgumentParser:
     compare_configurations.add_argument("no_review_run", type=Path)
     compare_configurations.add_argument("review_run", type=Path)
     compare_configurations.add_argument("--output-dir", type=Path, required=True)
+
+    compare_preflight = subparsers.add_parser(
+        "compare-preflight",
+        help="compare all four strict preflight benchmark configurations",
+    )
+    compare_preflight.add_argument("single_agent_run", type=Path)
+    compare_preflight.add_argument("no_review_run", type=Path)
+    compare_preflight.add_argument("review_run", type=Path)
+    compare_preflight.add_argument("memory_run", type=Path)
+    compare_preflight.add_argument("--output-dir", type=Path, required=True)
     return parser
 
 
@@ -176,7 +187,7 @@ def _checkpoint_path(run_dir: Path) -> Path:
 
 def _configured_agent(
     run_dir: Path,
-) -> tuple[str, str | None, Path | None, int, int, AgentMode]:
+) -> tuple[str, str | None, Path | None, int, int, bool, AgentMode]:
     config_path = run_dir.resolve() / "config.json"
     try:
         config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -231,12 +242,18 @@ def _configured_agent(
         if not isinstance(database, str) or not database.strip():
             raise ValueError(f"run has no valid memory database: {config_path}")
         memory_path = Path(database)
+    memory_write_enabled = memory.get("write_enabled", True)
+    if not isinstance(memory_write_enabled, bool):
+        raise ValueError(
+            f"run has an invalid memory write setting: {memory_write_enabled!r}"
+        )
     return (
         model,
         effort,
         memory_path,
         memory_limit,
         context_budget_chars,
+        memory_write_enabled,
         agent_mode,
     )
 
@@ -262,6 +279,7 @@ def _openai_runner(
     memory_path: Path | None,
     memory_limit: int,
     memory_context_budget_chars: int,
+    memory_write_enabled: bool,
     agent_mode: AgentMode,
 ) -> AgentGraphRunner:
     return AgentGraphRunner(
@@ -271,6 +289,7 @@ def _openai_runner(
         memory_store=EpisodicMemoryStore(memory_path) if memory_path else None,
         memory_limit=memory_limit,
         memory_context_budget_chars=memory_context_budget_chars,
+        memory_write_enabled=memory_write_enabled,
         agent_mode=agent_mode,
     )
 
@@ -320,6 +339,7 @@ def main() -> None:
             memory_path,
             memory_limit,
             memory_context_budget_chars,
+            memory_write_enabled,
             agent_mode,
         ) = _configured_agent(args.run_dir)
         with SqliteSaver.from_conn_string(str(database)) as saver:
@@ -331,6 +351,7 @@ def main() -> None:
                 memory_path=memory_path,
                 memory_limit=memory_limit,
                 memory_context_budget_chars=memory_context_budget_chars,
+                memory_write_enabled=memory_write_enabled,
                 agent_mode=agent_mode,
             )
             result = runner.resume(
@@ -359,6 +380,7 @@ def main() -> None:
             memory_path,
             memory_limit,
             memory_context_budget_chars,
+            memory_write_enabled,
             agent_mode,
         ) = _configured_agent(args.run_dir)
         with SqliteSaver.from_conn_string(str(database)) as saver:
@@ -370,6 +392,7 @@ def main() -> None:
                 memory_path=memory_path,
                 memory_limit=memory_limit,
                 memory_context_budget_chars=memory_context_budget_chars,
+                memory_write_enabled=memory_write_enabled,
                 agent_mode=agent_mode,
             )
             serve_control_panel(
@@ -462,7 +485,22 @@ def main() -> None:
             output_dir=args.output_dir,
         )
         for row in report["configurations"]:
-            print(f"{row['agent_mode']}={row['verified']}/{report['case_count']}")
+            print(f"{row['agent_mode']}={row['verified']}/{row['run_count']}")
+        print(f"summary={args.output_dir.resolve() / 'summary.md'}")
+        return
+    if args.command == "compare-preflight":
+        report = compare_preflight_configurations(
+            args.single_agent_run,
+            args.no_review_run,
+            args.review_run,
+            args.memory_run,
+            output_dir=args.output_dir,
+        )
+        for row in report["configurations"]:
+            print(
+                f"{row['configuration']}={row['verified']}/{row['run_count']} "
+                f"pass@1={row['pass_at_1']:.6f} pass@3={row['pass_at_3']:.6f}"
+            )
         print(f"summary={args.output_dir.resolve() / 'summary.md'}")
         return
 

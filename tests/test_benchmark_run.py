@@ -151,6 +151,7 @@ class BenchmarkRunTests(unittest.TestCase):
                 benchmark["protocol_version"], "agent-config-ablation-v2"
             )
             self.assertTrue(benchmark["memory"]["enabled"])
+            self.assertFalse(benchmark["memory"]["write_enabled"])
             self.assertEqual(benchmark["memory"]["limit"], 2)
             self.assertEqual(benchmark["memory"]["context_budget_chars"], 1800)
             self.assertEqual(benchmark["memory"]["corpus"]["entry_count"], 0)

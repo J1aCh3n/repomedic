@@ -51,6 +51,7 @@ def _write_benchmark(run_dir: Path, *, memory_enabled: bool) -> None:
         "attempts_per_case": 1,
         "memory": {
             "enabled": memory_enabled,
+            "write_enabled": False,
             "context_budget_chars": 2400,
             "corpus": corpus,
         },
@@ -106,6 +107,8 @@ def _write_benchmark(run_dir: Path, *, memory_enabled: bool) -> None:
                     if retrieved
                     else 0,
                     "corpus": corpus,
+                    "write_enabled": False,
+                    "write": None,
                 }
             ),
             encoding="utf-8",
@@ -162,6 +165,31 @@ class MemoryAblationTests(unittest.TestCase):
                 ],
             ):
                 with self.assertRaisesRegex(ValueError, "retrieved no entries"):
+                    compare_memory_ablation(baseline, treatment, root / "comparison")
+
+    def test_rejects_memory_treatment_that_can_mutate_its_corpus(self) -> None:
+        with temporary_directory() as temp_dir:
+            root = Path(temp_dir)
+            baseline = root / "baseline"
+            treatment = root / "treatment"
+            _write_benchmark(baseline, memory_enabled=False)
+            _write_benchmark(treatment, memory_enabled=True)
+            record = json.loads(
+                (treatment / "benchmark.json").read_text(encoding="utf-8")
+            )
+            record["memory"]["write_enabled"] = True
+            (treatment / "benchmark.json").write_text(
+                json.dumps(record), encoding="utf-8"
+            )
+
+            with patch(
+                "repomedic.memory_ablation.summarize_benchmark",
+                side_effect=[
+                    _summary(verified=1, statuses=["verified", "tests_failed"]),
+                    _summary(verified=2, statuses=["verified", "verified"]),
+                ],
+            ):
+                with self.assertRaisesRegex(ValueError, "frozen read-only"):
                     compare_memory_ablation(baseline, treatment, root / "comparison")
 
     def test_rejects_treatment_with_changed_corpus_or_invalid_budget_evidence(self) -> None:

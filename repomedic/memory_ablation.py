@@ -102,6 +102,13 @@ def _retrieval_evidence(
             raise ValueError(
                 f"memory evidence for {case_id} uses a different corpus snapshot"
             )
+        if (
+            artifact.get("write_enabled") is not False
+            or artifact.get("write") is not None
+        ):
+            raise ValueError(
+                f"memory evidence for {case_id} did not use a frozen read-only corpus"
+            )
         actual_context_chars = memory_prompt_chars(retrieved)
         if (
             artifact.get("context_budget_chars") != context_budget
@@ -227,6 +234,8 @@ def compare_memory_ablation(
         raise ValueError("baseline benchmark must disable memory")
     if not treatment_memory["enabled"]:
         raise ValueError("memory treatment benchmark must enable memory")
+    if treatment_memory.get("write_enabled") is not False:
+        raise ValueError("memory treatment benchmark must use a frozen read-only corpus")
 
     retrievals, covered_runs, covered_cases = _retrieval_evidence(
         memory_resolved, memory_record

@@ -143,11 +143,14 @@ class AgentGraphRunner:
         memory_store: EpisodicMemoryStore | None = None,
         memory_limit: int = 3,
         memory_context_budget_chars: int = DEFAULT_MEMORY_CONTEXT_BUDGET_CHARS,
+        memory_write_enabled: bool = True,
         agent_mode: AgentMode = DEFAULT_AGENT_MODE,
     ) -> None:
         if not 1 <= memory_limit <= 10:
             raise ValueError("memory limit must be between 1 and 10")
         validate_memory_context_budget(memory_context_budget_chars)
+        if not isinstance(memory_write_enabled, bool):
+            raise ValueError("memory write setting must be a boolean")
         if agent_mode not in AGENT_MODES:
             raise ValueError(f"unsupported agent mode: {agent_mode!r}")
         self.model = model
@@ -156,6 +159,7 @@ class AgentGraphRunner:
         self.memory_store = memory_store
         self.memory_limit = memory_limit
         self.memory_context_budget_chars = memory_context_budget_chars
+        self.memory_write_enabled = memory_write_enabled
         self.agent_mode = agent_mode
         self.graph = self._compile()
 
@@ -737,7 +741,11 @@ class AgentGraphRunner:
             },
         )
         updates: AgentState = {"status": status}
-        if status == "verified" and self.memory_store is not None:
+        if (
+            status == "verified"
+            and self.memory_store is not None
+            and self.memory_write_enabled
+        ):
             entry = self.memory_store.record_verified_run(Path(state["run_dir"]))
             memory = dict(state["memory"])
             memory["write"] = {
@@ -819,6 +827,7 @@ class AgentGraphRunner:
             "context_budget_chars": self.memory_context_budget_chars,
             "context_chars": memory_prompt_chars(lessons),
             "corpus": asdict(corpus) if corpus is not None else None,
+            "write_enabled": self.memory_write_enabled,
             "matched_entry_ids": [match.entry.entry_id for match in matches],
             "retrieved": lessons,
             "write": None,
@@ -872,6 +881,7 @@ class AgentGraphRunner:
             "context_chars": memory_prompt_chars(lessons),
             "corpus": asdict(corpus) if corpus is not None else None,
             "retrieved_entry_ids": retrieved_entry_ids,
+            "write_enabled": self.memory_write_enabled,
         }
         writer = ArtifactWriter(prepared.layout.run_dir)
         writer.write_json("config.json", config_data)

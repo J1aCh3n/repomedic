@@ -98,6 +98,7 @@ def start_benchmark(
         "attempts_per_case": attempts_per_case,
         "memory": {
             "enabled": memory_store is not None,
+            "write_enabled": False,
             "database": str(memory_store.path) if memory_store else None,
             "limit": memory_limit,
             "context_budget_chars": memory_context_budget_chars,
@@ -122,6 +123,7 @@ def start_benchmark(
                     memory_store=memory_store,
                     memory_limit=memory_limit,
                     memory_context_budget_chars=memory_context_budget_chars,
+                    memory_write_enabled=False,
                     agent_mode=agent_mode,
                 ).start(prepared)
             results.append(result)

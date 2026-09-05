@@ -200,12 +200,15 @@ workspace and test evidence.
 
 Memory usefulness must be measured, not assumed. RepoMedic includes a
 `compare-memory` command that only accepts paired benchmark runs with the same
-suite, ordered cases, model, reasoning effort, prompt version, and protocol.
+suite, ordered case-attempt pairs, attempt count, model, reasoning effort,
+prompt version, and protocol.
 The baseline must have memory disabled; the treatment must have memory enabled
-and must actually retrieve provenance-bearing entries. It also validates that
-all treatment cases used the benchmark's initial corpus fingerprint and that
-the recorded prompt payload stayed within its character budget. The comparison
-derives verified-rate and usage deltas from saved artifacts.
+and must actually retrieve provenance-bearing entries. The memory corpus is
+read-only during a benchmark. The comparator validates this setting, checks
+that all treatment runs used the benchmark's initial corpus fingerprint, and
+checks that the recorded prompt payload stayed within its character budget. The
+comparison derives pass@1, pass@3, verified-rate, and usage deltas from saved
+artifacts.
 
 The current 12 cases are a development dataset. A paired result on them measures
 development-set behavior only. A later generalization claim needs new holdout

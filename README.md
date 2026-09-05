@@ -483,8 +483,9 @@ repomedic start-benchmark benchmarks/suites/initial_12.yaml `
 ## Phase 5 Agent configuration ablation
 
 The current `agent-graph-v5` / `agent-config-ablation-v2` protocol exposes three
-memory-free modes while holding the fixture, schemas, tool restrictions,
-approval gate, Docker tests, and artifact accounting constant:
+memory-free modes. A fourth arm adds memory to the full review graph. All four
+hold the fixture, schemas, tool restrictions, approval gate, Docker tests, and
+artifact accounting constant:
 
 - `single_agent`: one `repairer` model identity performs planning,
   investigation decisions, evidence synthesis, coding, and self-review across
@@ -568,42 +569,60 @@ repomedic run-agent benchmarks/cases/order_service_002 `
 
 Every run writes `memory.json`, including retrieved entry provenance, canonical
 compact-JSON character count, the budget, the initial memory-corpus entry count
-and content hash, and the entry written after successful verification. The
-database path, corpus identity, budget, and retrieval IDs are frozen in
-`config.json`, so approval through either CLI or web UI uses the same prompt
-payload after restart. Runs created under an older prompt version are rejected
-on resume rather than silently changing behavior.
+and content hash, the write policy, and any entry written after successful
+verification. Individual memory-enabled runs learn by default; benchmark runs
+set the write policy to read-only. The database path, corpus identity, budget,
+retrieval IDs, and write policy are frozen in `config.json`, so approval through
+either CLI or web UI resumes the same behavior. Runs created under an older
+prompt version are rejected on resume rather than silently changing behavior.
 
 The memory uplift gate requires paired, complete benchmark runs. Seed and freeze
-the memory database from prior verified runs, then run the same suite once
-without memory and once with memory using identical model and reasoning
-settings. A comparison on the current 12 development cases is development-set
-evidence only; it does not establish holdout generalization:
+the memory database from prior verified runs, then run the same suite without
+memory and with memory using identical model and reasoning settings. Benchmark
+runs retrieve from the frozen database but do not write new entries, preventing
+earlier cases or attempts from contaminating later ones. Do not run
+`memory-learn` against the frozen database while the treatment is in progress.
+A comparison on the current 12 development cases is development-set evidence
+only; it does not establish holdout generalization:
 
 ```powershell
-repomedic start-benchmark benchmarks/suites/order_service_4.yaml `
+repomedic start-benchmark benchmarks/suites/initial_12.yaml `
   --model gpt-5.6-terra --reasoning-effort low `
-  --agent-mode multi_agent_review --run-id no-memory
-repomedic start-benchmark benchmarks/suites/order_service_4.yaml `
-  --model gpt-5.6-terra --reasoning-effort low `
-  --agent-mode multi_agent_review --run-id with-memory `
-  --memory-db runs/memory/episodic.sqlite
+  --agent-mode multi_agent_review --attempts 3 `
+  --run-id phase6-review-memory-v2 `
+  --memory-db runs/memory/phase6-frozen.sqlite
 ```
 
 After reviewing and deciding every case in both runs, generate the two benchmark
 summaries and the matched comparison:
 
 ```powershell
-repomedic benchmark-status runs/benchmarks/order_service_4/no-memory
-repomedic benchmark-status runs/benchmarks/order_service_4/with-memory
-repomedic compare-memory runs/benchmarks/order_service_4/no-memory `
-  runs/benchmarks/order_service_4/with-memory `
-  --output-dir runs/memory-ablation/order-service-v1
+repomedic benchmark-status runs/benchmarks/initial_12/phase5-review-v2
+repomedic benchmark-status runs/benchmarks/initial_12/phase6-review-memory-v2
+repomedic compare-memory runs/benchmarks/initial_12/phase5-review-v2 `
+  runs/benchmarks/initial_12/phase6-review-memory-v2 `
+  --output-dir runs/memory-ablation/phase6-v2
 ```
 
 `compare-memory` refuses incomplete or unmatched runs, a baseline with memory
 enabled, a treatment with memory disabled, missing provenance, changed corpus
-snapshots, invalid context-budget accounting, same-case memory, or a treatment
-that retrieved no entries. It derives verified-rate and usage deltas from saved
-artifacts. The infrastructure is implemented; no memory uplift is claimed until
-this paired live-model experiment is completed.
+snapshots, invalid context-budget accounting, a mutable treatment corpus,
+same-case memory, or a treatment that retrieved no entries. It derives pass@1,
+pass@3, verified-rate, and usage deltas from saved artifacts.
+
+After all four 36-run arms are terminal, generate the single strict preflight
+comparison (144 case-runs total):
+
+```powershell
+repomedic compare-preflight `
+  runs/benchmarks/initial_12/phase5-single-v2 `
+  runs/benchmarks/initial_12/phase5-no-review-v2 `
+  runs/benchmarks/initial_12/phase5-review-v2 `
+  runs/benchmarks/initial_12/phase6-review-memory-v2 `
+  --output-dir runs/preflight-comparison/initial-12-v2
+```
+
+The command first applies the strict three-arm configuration checks, then the
+frozen-corpus memory checks, and finally writes one four-row report plus both
+component reports. The infrastructure is implemented; no configuration or
+memory uplift is claimed until these live-model runs are completed.
