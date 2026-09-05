@@ -1,5 +1,6 @@
 from pathlib import Path
 import unittest
+import json
 
 from repomedic.benchmark import load_suite
 from repomedic.benchmark_run import start_benchmark, summarize_benchmark
@@ -34,12 +35,20 @@ class BenchmarkRunTests(unittest.TestCase):
                 runs_root=Path(temp_dir),
                 run_id="benchmark_run",
             )
+            for result in started.case_results:
+                usage_path = Path(result.run_dir, "usage.json")
+                usage = json.loads(usage_path.read_text(encoding="utf-8"))
+                usage.update(model_calls=2, latency_ms=20)
+                usage_path.write_text(json.dumps(usage), encoding="utf-8")
             summary = summarize_benchmark(started.run_dir)
 
             self.assertEqual(len(started.case_results), 4)
             self.assertEqual(summary["status_counts"], {"model_error": 4})
             self.assertTrue(summary["complete"])
             self.assertEqual(summary["verified"], 0)
+            self.assertEqual(summary["usage"]["model_calls"], 8)
+            self.assertEqual(summary["usage"]["latency_ms"], 80)
+            self.assertEqual(summary["usage"]["average_model_latency_ms"], 10)
             for result in started.case_results:
                 self.assertTrue(Path(result.run_dir, "checkpoint.sqlite").is_file())
 

@@ -105,6 +105,8 @@ def _summary_markdown(summary: dict[str, Any]) -> str:
         f"- Total input tokens: `{summary['usage']['input_tokens']}`",
         f"- Total output tokens: `{summary['usage']['output_tokens']}`",
         f"- Total model calls: `{summary['usage']['model_calls']}`",
+        f"- Cumulative model latency: `{summary['usage']['latency_ms']} ms`",
+        f"- Average model-call latency: `{summary['usage']['average_model_latency_ms']} ms`",
         "",
         "## Cases",
         "",
@@ -158,6 +160,11 @@ def summarize_benchmark(run_dir: Path) -> dict[str, Any]:
                 "usage": usage,
             }
         )
+
+    model_calls = usage_totals["model_calls"]
+    usage_totals["average_model_latency_ms"] = (
+        round(usage_totals["latency_ms"] / model_calls) if model_calls else 0
+    )
 
     complete = all(row["status"] in _TERMINAL_STATUSES for row in case_rows)
     summary: dict[str, Any] = {
