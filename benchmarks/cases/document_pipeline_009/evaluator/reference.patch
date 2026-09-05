@@ -1,0 +1,12 @@
+diff --git a/document_pipeline/transform.py b/document_pipeline/transform.py
+--- a/document_pipeline/transform.py
++++ b/document_pipeline/transform.py
+@@ -2,7 +2,7 @@ from document_pipeline.models import Document
+ 
+ 
+ def normalize_whitespace(value: str) -> str:
+-    return " ".join(value.strip().split(" "))
++    return " ".join(value.split())
+ 
+ 
+ def transform_document(
