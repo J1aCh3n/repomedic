@@ -57,6 +57,41 @@ def _write_benchmark(run_dir: Path, value: dict[str, Any]) -> None:
     ArtifactWriter(run_dir).write_json("benchmark.json", value)
 
 
+def _load_benchmark(run_dir: Path) -> dict[str, Any]:
+    try:
+        value = json.loads((run_dir / "benchmark.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"cannot resume benchmark record: {error}") from error
+    if not isinstance(value, dict):
+        raise ValueError("benchmark record must be an object")
+    return value
+
+
+def _validate_resume_record(
+    record: dict[str, Any],
+    expected: dict[str, Any],
+    expected_keys: tuple[tuple[str, int], ...],
+) -> set[tuple[str, int]]:
+    for field, expected_value in expected.items():
+        if field != "case_runs" and record.get(field) != expected_value:
+            raise ValueError(f"cannot resume benchmark with changed {field}")
+    rows = record.get("case_runs")
+    if not isinstance(rows, list):
+        raise ValueError("benchmark record has invalid case runs")
+    recorded_keys: list[tuple[str, int]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("benchmark record has invalid case runs")
+        case_id = row.get("case_id")
+        attempt = row.get("attempt", 1)
+        if not isinstance(case_id, str) or not isinstance(attempt, int):
+            raise ValueError("benchmark record has invalid case runs")
+        recorded_keys.append((case_id, attempt))
+    if tuple(recorded_keys) != expected_keys[: len(recorded_keys)]:
+        raise ValueError("benchmark case runs are not an ordered suite prefix")
+    return set(recorded_keys)
+
+
 def start_benchmark(
     suite: BenchmarkSuite,
     *,
@@ -69,6 +104,7 @@ def start_benchmark(
     memory_context_budget_chars: int = DEFAULT_MEMORY_CONTEXT_BUDGET_CHARS,
     agent_mode: AgentMode = DEFAULT_AGENT_MODE,
     attempts_per_case: int = 1,
+    resume_existing: bool = False,
 ) -> BenchmarkStartResult:
     if (
         not isinstance(attempts_per_case, int)
@@ -82,11 +118,9 @@ def start_benchmark(
     suite_root.mkdir(exist_ok=True)
     benchmark_id = run_id or _new_run_id()
     run_dir = resolve_within(suite_root, benchmark_id)
-    run_dir.mkdir(exist_ok=False)
     cases_root = resolve_within(run_dir, "cases")
-    cases_root.mkdir()
     corpus = memory_store.snapshot() if memory_store is not None else None
-    record: dict[str, Any] = {
+    expected_record: dict[str, Any] = {
         "suite_id": suite.suite_id,
         "suite_path": str(suite.suite_path),
         "split": suite.split,
@@ -106,26 +140,71 @@ def start_benchmark(
         },
         "case_runs": [],
     }
-    _write_benchmark(run_dir, record)
+    expected_keys = tuple(
+        (case.case_id, attempt)
+        for case in suite.cases
+        for attempt in range(1, attempts_per_case + 1)
+    )
+    if run_dir.exists():
+        if not resume_existing:
+            raise FileExistsError(f"benchmark run already exists: {run_dir}")
+        record = _load_benchmark(run_dir)
+        recorded_keys = _validate_resume_record(
+            record, expected_record, expected_keys
+        )
+        if not cases_root.is_dir():
+            raise ValueError("benchmark run has no cases directory")
+    else:
+        if resume_existing:
+            raise ValueError(f"benchmark run does not exist: {run_dir}")
+        run_dir.mkdir()
+        cases_root.mkdir()
+        record = expected_record
+        recorded_keys: set[tuple[str, int]] = set()
+        _write_benchmark(run_dir, record)
 
     results: list[AgentRunResult] = []
     for case in suite.cases:
         for attempt in range(1, attempts_per_case + 1):
-            prepared = harness.prepare_case(
-                case.case_dir, cases_root, run_id=f"attempt_{attempt}"
-            )
-            checkpoint = prepared.layout.run_dir / "checkpoint.sqlite"
-            with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
-                result = AgentGraphRunner(
-                    model,
-                    harness,
-                    saver,
-                    memory_store=memory_store,
-                    memory_limit=memory_limit,
-                    memory_context_budget_chars=memory_context_budget_chars,
-                    memory_write_enabled=False,
-                    agent_mode=agent_mode,
-                ).start(prepared)
+            run_key = (case.case_id, attempt)
+            if run_key in recorded_keys:
+                continue
+            attempt_id = f"attempt_{attempt}"
+            case_root = resolve_within(cases_root, case.case_id)
+            attempt_dir = resolve_within(case_root, attempt_id)
+            if attempt_dir.exists():
+                checkpoint = attempt_dir / "checkpoint.sqlite"
+                if not checkpoint.is_file():
+                    raise ValueError(
+                        f"orphan benchmark attempt has no checkpoint: {attempt_dir}"
+                    )
+                with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
+                    result = AgentGraphRunner(
+                        model,
+                        harness,
+                        saver,
+                        memory_store=memory_store,
+                        memory_limit=memory_limit,
+                        memory_context_budget_chars=memory_context_budget_chars,
+                        memory_write_enabled=False,
+                        agent_mode=agent_mode,
+                    ).inspect(attempt_id)
+            else:
+                prepared = harness.prepare_case(
+                    case.case_dir, cases_root, run_id=attempt_id
+                )
+                checkpoint = prepared.layout.run_dir / "checkpoint.sqlite"
+                with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
+                    result = AgentGraphRunner(
+                        model,
+                        harness,
+                        saver,
+                        memory_store=memory_store,
+                        memory_limit=memory_limit,
+                        memory_context_budget_chars=memory_context_budget_chars,
+                        memory_write_enabled=False,
+                        agent_mode=agent_mode,
+                    ).start(prepared)
             results.append(result)
             record["case_runs"].append(
                 {
@@ -136,6 +215,7 @@ def start_benchmark(
                     "initial_status": result.status,
                 }
             )
+            recorded_keys.add(run_key)
             _write_benchmark(run_dir, record)
 
     return BenchmarkStartResult(run_dir=run_dir, case_results=tuple(results))

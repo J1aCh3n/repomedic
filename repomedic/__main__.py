@@ -103,6 +103,11 @@ def _parser() -> ArgumentParser:
     )
     start_benchmark_parser.add_argument("--run-id")
     start_benchmark_parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="continue an interrupted benchmark with the same frozen configuration",
+    )
+    start_benchmark_parser.add_argument(
         "--attempts",
         type=int,
         default=1,
@@ -423,6 +428,7 @@ def main() -> None:
             memory_context_budget_chars=args.memory_context_budget_chars,
             agent_mode=args.agent_mode,
             attempts_per_case=args.attempts,
+            resume_existing=args.resume,
         )
         print(f"run_dir={started.run_dir}")
         for result in started.case_results:

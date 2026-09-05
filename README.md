@@ -516,6 +516,11 @@ repomedic start-benchmark benchmarks/suites/preflight_6.yaml `
   --agent-mode multi_agent_review --attempts 3 --run-id preflight6-review-v2
 ```
 
+If a long start command is interrupted, rerun that same command with `--resume`.
+RepoMedic validates the frozen configuration, skips recorded attempts, recovers
+an unrecorded checkpoint at the next expected case-attempt, and continues. It
+does not silently restart completed model work.
+
 After every case reaches a terminal status, generate the matched comparison:
 
 ```powershell

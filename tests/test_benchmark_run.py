@@ -188,6 +188,69 @@ class BenchmarkRunTests(unittest.TestCase):
             self.assertEqual(summary["pass_at_1"], 0.0)
             self.assertEqual(summary["pass_at_3"], 0.0)
 
+    def test_resume_skips_recorded_attempts_without_new_model_calls(self) -> None:
+        suite = load_suite(SUITE_PATH, case_ids=("order_service_001",))
+        with temporary_directory() as temp_dir:
+            runs_root = Path(temp_dir)
+            started = start_benchmark(
+                suite,
+                model=ScriptedModel(
+                    {"planner": [{"acceptance_criteria": []} for _ in range(3)]}
+                ),
+                harness=DeterministicHarness(sandbox=UnusedSandbox()),
+                runs_root=runs_root,
+                run_id="resumable",
+                attempts_per_case=3,
+            )
+
+            resumed = start_benchmark(
+                suite,
+                model=ScriptedModel({}),
+                harness=DeterministicHarness(sandbox=UnusedSandbox()),
+                runs_root=runs_root,
+                run_id="resumable",
+                attempts_per_case=3,
+                resume_existing=True,
+            )
+
+            self.assertEqual(resumed.case_results, ())
+            record = json.loads(
+                (started.run_dir / "benchmark.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(len(record["case_runs"]), 3)
+
+    def test_resume_recovers_unrecorded_checkpoint_without_rerunning(self) -> None:
+        suite = load_suite(SUITE_PATH, case_ids=("order_service_001",))
+        with temporary_directory() as temp_dir:
+            runs_root = Path(temp_dir)
+            started = start_benchmark(
+                suite,
+                model=ScriptedModel(
+                    {"planner": [{"acceptance_criteria": []}]}
+                ),
+                harness=DeterministicHarness(sandbox=UnusedSandbox()),
+                runs_root=runs_root,
+                run_id="orphaned",
+            )
+            record_path = started.run_dir / "benchmark.json"
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+            record["case_runs"] = []
+            record_path.write_text(json.dumps(record), encoding="utf-8")
+
+            resumed = start_benchmark(
+                suite,
+                model=ScriptedModel({}),
+                harness=DeterministicHarness(sandbox=UnusedSandbox()),
+                runs_root=runs_root,
+                run_id="orphaned",
+                resume_existing=True,
+            )
+
+            self.assertEqual(len(resumed.case_results), 1)
+            self.assertEqual(resumed.case_results[0].status, "model_error")
+            recovered = json.loads(record_path.read_text(encoding="utf-8"))
+            self.assertEqual(len(recovered["case_runs"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
