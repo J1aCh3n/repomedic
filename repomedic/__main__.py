@@ -4,10 +4,17 @@ import json
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from repomedic.agent_graph import AgentGraphRunner, AgentRunResult
+from repomedic.agent_graph import (
+    AGENT_MODES,
+    DEFAULT_AGENT_MODE,
+    AgentGraphRunner,
+    AgentMode,
+    AgentRunResult,
+)
 from repomedic.agent_schemas import ApprovalDecision
 from repomedic.benchmark import load_suite
 from repomedic.benchmark_run import start_benchmark, summarize_benchmark
+from repomedic.configuration_ablation import compare_agent_configurations
 from repomedic.harness import DeterministicHarness
 from repomedic.memory import (
     DEFAULT_MEMORY_CONTEXT_BUDGET_CHARS,
@@ -45,6 +52,9 @@ def _parser() -> ArgumentParser:
     run_agent.add_argument("--docker-image", default=DEFAULT_DOCKER_IMAGE)
     run_agent.add_argument("--memory-db", type=Path)
     run_agent.add_argument("--memory-limit", type=int, default=3)
+    run_agent.add_argument(
+        "--agent-mode", choices=AGENT_MODES, default=DEFAULT_AGENT_MODE
+    )
     run_agent.add_argument(
         "--memory-context-budget-chars",
         type=int,
@@ -97,6 +107,9 @@ def _parser() -> ArgumentParser:
     start_benchmark_parser.add_argument("--memory-db", type=Path)
     start_benchmark_parser.add_argument("--memory-limit", type=int, default=3)
     start_benchmark_parser.add_argument(
+        "--agent-mode", choices=AGENT_MODES, default=DEFAULT_AGENT_MODE
+    )
+    start_benchmark_parser.add_argument(
         "--memory-context-budget-chars",
         type=int,
         default=DEFAULT_MEMORY_CONTEXT_BUDGET_CHARS,
@@ -133,6 +146,15 @@ def _parser() -> ArgumentParser:
     compare_memory.add_argument("baseline_run", type=Path)
     compare_memory.add_argument("memory_run", type=Path)
     compare_memory.add_argument("--output-dir", type=Path, required=True)
+
+    compare_configurations = subparsers.add_parser(
+        "compare-configurations",
+        help="compare matched single-agent, no-review, and review benchmarks",
+    )
+    compare_configurations.add_argument("single_agent_run", type=Path)
+    compare_configurations.add_argument("no_review_run", type=Path)
+    compare_configurations.add_argument("review_run", type=Path)
+    compare_configurations.add_argument("--output-dir", type=Path, required=True)
     return parser
 
 
@@ -148,7 +170,7 @@ def _checkpoint_path(run_dir: Path) -> Path:
 
 def _configured_agent(
     run_dir: Path,
-) -> tuple[str, str | None, Path | None, int, int]:
+) -> tuple[str, str | None, Path | None, int, int, AgentMode]:
     config_path = run_dir.resolve() / "config.json"
     try:
         config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -175,6 +197,9 @@ def _configured_agent(
             f"run prompt version {configured_prompt!r} cannot resume under "
             f"{PROMPT_VERSION!r}"
         )
+    agent_mode = config["agent_graph"].get("mode", DEFAULT_AGENT_MODE)
+    if agent_mode not in AGENT_MODES:
+        raise ValueError(f"run has an invalid agent mode: {agent_mode!r}")
     memory = config.get("memory", {"enabled": False, "limit": 3})
     if not isinstance(memory, dict):
         raise ValueError(f"run has an invalid memory configuration: {config_path}")
@@ -200,7 +225,14 @@ def _configured_agent(
         if not isinstance(database, str) or not database.strip():
             raise ValueError(f"run has no valid memory database: {config_path}")
         memory_path = Path(database)
-    return model, effort, memory_path, memory_limit, context_budget_chars
+    return (
+        model,
+        effort,
+        memory_path,
+        memory_limit,
+        context_budget_chars,
+        agent_mode,
+    )
 
 
 def _print_agent_result(result: AgentRunResult) -> None:
@@ -224,6 +256,7 @@ def _openai_runner(
     memory_path: Path | None,
     memory_limit: int,
     memory_context_budget_chars: int,
+    agent_mode: AgentMode,
 ) -> AgentGraphRunner:
     return AgentGraphRunner(
         OpenAIResponsesModel(model, reasoning_effort=reasoning_effort),
@@ -232,6 +265,7 @@ def _openai_runner(
         memory_store=EpisodicMemoryStore(memory_path) if memory_path else None,
         memory_limit=memory_limit,
         memory_context_budget_chars=memory_context_budget_chars,
+        agent_mode=agent_mode,
     )
 
 
@@ -266,6 +300,7 @@ def main() -> None:
                 ),
                 memory_limit=args.memory_limit,
                 memory_context_budget_chars=args.memory_context_budget_chars,
+                agent_mode=args.agent_mode,
             ).start(prepared)
         _print_agent_result(result)
         raise SystemExit(
@@ -273,9 +308,14 @@ def main() -> None:
         )
     if args.command == "decide-agent":
         database = _checkpoint_path(args.run_dir)
-        model, effort, memory_path, memory_limit, memory_context_budget_chars = (
-            _configured_agent(args.run_dir)
-        )
+        (
+            model,
+            effort,
+            memory_path,
+            memory_limit,
+            memory_context_budget_chars,
+            agent_mode,
+        ) = _configured_agent(args.run_dir)
         with SqliteSaver.from_conn_string(str(database)) as saver:
             runner = _openai_runner(
                 model=model,
@@ -285,6 +325,7 @@ def main() -> None:
                 memory_path=memory_path,
                 memory_limit=memory_limit,
                 memory_context_budget_chars=memory_context_budget_chars,
+                agent_mode=agent_mode,
             )
             result = runner.resume(
                 args.run_dir.resolve().name,
@@ -306,9 +347,14 @@ def main() -> None:
         if not 1 <= args.port <= 65535:
             raise ValueError("port must be between 1 and 65535")
         database = _checkpoint_path(args.run_dir)
-        model, effort, memory_path, memory_limit, memory_context_budget_chars = (
-            _configured_agent(args.run_dir)
-        )
+        (
+            model,
+            effort,
+            memory_path,
+            memory_limit,
+            memory_context_budget_chars,
+            agent_mode,
+        ) = _configured_agent(args.run_dir)
         with SqliteSaver.from_conn_string(str(database)) as saver:
             runner = _openai_runner(
                 model=model,
@@ -318,6 +364,7 @@ def main() -> None:
                 memory_path=memory_path,
                 memory_limit=memory_limit,
                 memory_context_budget_chars=memory_context_budget_chars,
+                agent_mode=agent_mode,
             )
             serve_control_panel(
                 runner, run_id=args.run_dir.resolve().name, port=args.port
@@ -345,6 +392,7 @@ def main() -> None:
             ),
             memory_limit=args.memory_limit,
             memory_context_budget_chars=args.memory_context_budget_chars,
+            agent_mode=args.agent_mode,
         )
         print(f"run_dir={started.run_dir}")
         for result in started.case_results:
@@ -394,6 +442,17 @@ def main() -> None:
             f"verified={report['baseline']['verified']}->"
             f"{report['memory_treatment']['verified']}"
         )
+        print(f"summary={args.output_dir.resolve() / 'summary.md'}")
+        return
+    if args.command == "compare-configurations":
+        report = compare_agent_configurations(
+            args.single_agent_run,
+            args.no_review_run,
+            args.review_run,
+            output_dir=args.output_dir,
+        )
+        for row in report["configurations"]:
+            print(f"{row['agent_mode']}={row['verified']}/{report['case_count']}")
         print(f"summary={args.output_dir.resolve() / 'summary.md'}")
         return
 

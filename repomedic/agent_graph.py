@@ -1,6 +1,6 @@
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, TypedDict, cast
+from typing import Any, Literal, TypedDict, cast
 import json
 
 from langgraph.graph import END, START, StateGraph
@@ -45,6 +45,7 @@ from repomedic.prompts import (
     PLANNER_PROMPT,
     PROMPT_VERSION,
     REVIEWER_PROMPT,
+    SINGLE_AGENT_PROMPT,
 )
 from repomedic.workspace import RunLayout
 
@@ -82,6 +83,19 @@ class AgentState(TypedDict, total=False):
     review_feedback: str
     memory_lessons: list[dict[str, Any]]
     memory: dict[str, Any]
+
+
+AgentMode = Literal[
+    "single_agent",
+    "multi_agent_no_review",
+    "multi_agent_review",
+]
+AGENT_MODES: tuple[AgentMode, ...] = (
+    "single_agent",
+    "multi_agent_no_review",
+    "multi_agent_review",
+)
+DEFAULT_AGENT_MODE: AgentMode = "multi_agent_review"
 
 
 @dataclass(frozen=True)
@@ -129,16 +143,20 @@ class AgentGraphRunner:
         memory_store: EpisodicMemoryStore | None = None,
         memory_limit: int = 3,
         memory_context_budget_chars: int = DEFAULT_MEMORY_CONTEXT_BUDGET_CHARS,
+        agent_mode: AgentMode = DEFAULT_AGENT_MODE,
     ) -> None:
         if not 1 <= memory_limit <= 10:
             raise ValueError("memory limit must be between 1 and 10")
         validate_memory_context_budget(memory_context_budget_chars)
+        if agent_mode not in AGENT_MODES:
+            raise ValueError(f"unsupported agent mode: {agent_mode!r}")
         self.model = model
         self.harness = harness
         self.checkpointer = checkpointer
         self.memory_store = memory_store
         self.memory_limit = memory_limit
         self.memory_context_budget_chars = memory_context_budget_chars
+        self.agent_mode = agent_mode
         self.graph = self._compile()
 
     def _compile(self) -> Any:
@@ -171,7 +189,9 @@ class AgentGraphRunner:
             "apply", self._route_running, {"next": "test", "terminal": "terminal"}
         )
         builder.add_conditional_edges(
-            "test", self._route_running, {"next": "reviewer", "terminal": "terminal"}
+            "test",
+            self._route_test,
+            {"reviewer": "reviewer", "finalize": "finalize", "terminal": "terminal"},
         )
         builder.add_conditional_edges(
             "reviewer",
@@ -197,6 +217,13 @@ class AgentGraphRunner:
             return "terminal"
         action = state["approval"]["action"]
         return "apply" if action == "approve" else "coder"
+
+    def _route_test(self, state: AgentState) -> str:
+        if state["status"] != "running":
+            return "terminal"
+        if self.agent_mode == "multi_agent_no_review":
+            return "finalize"
+        return "reviewer"
 
     @staticmethod
     def _route_review(state: AgentState) -> str:
@@ -227,6 +254,9 @@ class AgentGraphRunner:
             )
         return count + 1
 
+    def _model_agent(self, stage: str) -> str:
+        return "repairer" if self.agent_mode == "single_agent" else stage
+
     def _generate(
         self,
         state: AgentState,
@@ -237,10 +267,16 @@ class AgentGraphRunner:
         output_type: type[Any],
         usage: dict[str, int],
     ) -> tuple[Any, dict[str, int]]:
+        model_agent = self._model_agent(agent)
+        model_instructions = (
+            SINGLE_AGENT_PROMPT
+            if self.agent_mode == "single_agent"
+            else instructions
+        )
         try:
             result = self.model.generate(
-                agent=agent,
-                instructions=instructions,
+                agent=model_agent,
+                instructions=model_instructions,
                 input_data=input_data,
                 output_type=output_type,
             )
@@ -262,7 +298,8 @@ class AgentGraphRunner:
     ) -> AgentState:
         message = str(error)
         self._writer(state).append_trace(
-            "model_failed", {"agent": agent, "error": message}
+            "model_failed",
+            {"agent": self._model_agent(agent), "stage": agent, "error": message},
         )
         return {
             "status": "model_error",
@@ -325,7 +362,12 @@ class AgentGraphRunner:
         data = plan.model_dump(mode="json")
         self._writer(state).write_json("plan.json", data)
         self._writer(state).append_trace(
-            "agent_completed", {"agent": "planner", "prompt_version": PROMPT_VERSION}
+            "agent_completed",
+            {
+                "agent": self._model_agent("planner"),
+                "stage": "planner",
+                "prompt_version": PROMPT_VERSION,
+            },
         )
         return {
             "repository_files": list(files),
@@ -389,7 +431,8 @@ class AgentGraphRunner:
         self._writer(state).append_trace(
             "agent_completed",
             {
-                "agent": "investigator",
+                "agent": self._model_agent("investigator"),
+                "stage": "investigator",
                 "prompt_version": PROMPT_VERSION,
                 "operations": len(selection.searches) + len(selection.reads),
             },
@@ -443,7 +486,12 @@ class AgentGraphRunner:
         data = proposal.model_dump(mode="json")
         self._writer(state).write_text("proposal.diff", preview)
         self._writer(state).append_trace(
-            "agent_completed", {"agent": "coder", "prompt_version": PROMPT_VERSION}
+            "agent_completed",
+            {
+                "agent": self._model_agent("coder"),
+                "stage": "coder",
+                "prompt_version": PROMPT_VERSION,
+            },
         )
         return {
             "proposal": data,
@@ -547,6 +595,13 @@ class AgentGraphRunner:
                 "status": "infrastructure_error",
                 "error": "public test infrastructure failed",
             }
+        if self.agent_mode == "multi_agent_no_review" and result.exit_code != 0:
+            return {
+                "public_result": asdict(result),
+                "policy": asdict(policy),
+                "status": "tests_failed",
+                "error": "public tests failed and Reviewer reflection is disabled",
+            }
         return {
             "public_result": asdict(result),
             "policy": asdict(policy),
@@ -589,7 +644,8 @@ class AgentGraphRunner:
         self._writer(state).append_trace(
             "agent_completed",
             {
-                "agent": "reviewer",
+                "agent": self._model_agent("reviewer"),
+                "stage": "reviewer",
                 "prompt_version": PROMPT_VERSION,
                 "verdict": review.verdict,
                 "requested_paths": list(review.requested_paths),
@@ -673,6 +729,7 @@ class AgentGraphRunner:
                 "model": self.model.model_id,
                 "reasoning_effort": getattr(self.model, "reasoning_effort", None),
                 "prompt_version": PROMPT_VERSION,
+                "agent_mode": self.agent_mode,
                 "model_calls": state["model_calls"],
                 "tool_calls": state["tool_calls"],
                 "repair_iterations": state["iterations"],
@@ -711,6 +768,7 @@ class AgentGraphRunner:
                 "model": self.model.model_id,
                 "reasoning_effort": getattr(self.model, "reasoning_effort", None),
                 "prompt_version": PROMPT_VERSION,
+                "agent_mode": self.agent_mode,
                 "model_calls": state["model_calls"],
                 "tool_calls": state["tool_calls"],
                 "repair_iterations": state["iterations"],
@@ -803,6 +861,7 @@ class AgentGraphRunner:
             "model": self.model.model_id,
             "reasoning_effort": getattr(self.model, "reasoning_effort", None),
             "prompt_version": PROMPT_VERSION,
+            "mode": self.agent_mode,
             "checkpoint": "checkpoint.sqlite",
         }
         config_data["memory"] = {

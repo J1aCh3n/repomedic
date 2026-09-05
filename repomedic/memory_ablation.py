@@ -14,6 +14,7 @@ _PAIR_FIELDS = (
     "model",
     "reasoning_effort",
     "prompt_version",
+    "agent_mode",
 )
 _USAGE_FIELDS = ("total_tokens", "model_calls", "tool_calls", "latency_ms")
 
@@ -140,6 +141,7 @@ def _markdown(report: dict[str, Any]) -> str:
         f"- Suite: `{report['suite_id']}`",
         f"- Model: `{report['model']}`",
         f"- Prompt: `{report['prompt_version']}`",
+        f"- Agent mode: `{report['agent_mode']}`",
         f"- Cases: `{report['case_count']}`",
         f"- Memory corpus entries: `{report['memory_evidence']['corpus']['entry_count']}`",
         f"- Memory corpus hash: `{report['memory_evidence']['corpus']['content_hash']}`",
@@ -221,6 +223,7 @@ def compare_memory_ablation(
         "model": baseline_summary["model"],
         "reasoning_effort": baseline_summary["reasoning_effort"],
         "prompt_version": baseline_summary["prompt_version"],
+        "agent_mode": baseline_summary["agent_mode"],
         "case_count": case_count,
         "baseline": {
             "run_dir": str(baseline_resolved),

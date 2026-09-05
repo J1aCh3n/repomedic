@@ -22,6 +22,8 @@ class CliTests(unittest.TestCase):
                 "2",
                 "--memory-context-budget-chars",
                 "1800",
+                "--agent-mode",
+                "multi_agent_no_review",
             ]
         )
 
@@ -32,6 +34,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.memory_db, Path("runs/memory.sqlite"))
         self.assertEqual(args.memory_limit, 2)
         self.assertEqual(args.memory_context_budget_chars, 1800)
+        self.assertEqual(args.agent_mode, "multi_agent_no_review")
 
     def test_memory_commands_parse_explicit_database(self) -> None:
         learn = _parser().parse_args(
@@ -78,6 +81,20 @@ class CliTests(unittest.TestCase):
         self.assertEqual(compare.baseline_run, Path("runs/baseline"))
         self.assertEqual(compare.memory_run, Path("runs/treatment"))
         self.assertEqual(compare.output_dir, Path("runs/comparison"))
+
+        configurations = _parser().parse_args(
+            [
+                "compare-configurations",
+                "runs/single",
+                "runs/no-review",
+                "runs/review",
+                "--output-dir",
+                "runs/configuration-comparison",
+            ]
+        )
+        self.assertEqual(configurations.single_agent_run, Path("runs/single"))
+        self.assertEqual(configurations.no_review_run, Path("runs/no-review"))
+        self.assertEqual(configurations.review_run, Path("runs/review"))
 
 
 if __name__ == "__main__":

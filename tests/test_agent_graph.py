@@ -177,6 +177,15 @@ class AgentGraphTests(unittest.TestCase):
         runner = AgentGraphRunner(model, harness, InMemorySaver())
         return runner, runner.start(prepared)
 
+    def test_rejects_unknown_agent_mode(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unsupported agent mode"):
+            AgentGraphRunner(
+                ScriptedModel({}),
+                DeterministicHarness(),
+                InMemorySaver(),
+                agent_mode="unknown",  # type: ignore[arg-type]
+            )
+
     def test_direct_pass_pauses_then_finishes_with_evidence(self) -> None:
         with temporary_directory() as temp_dir:
             runner, paused = self._start(
@@ -206,6 +215,72 @@ class AgentGraphTests(unittest.TestCase):
                 "final-report.md",
             ):
                 self.assertTrue((run_dir / name).is_file(), name)
+
+    def test_single_agent_mode_uses_one_model_identity_for_all_judgment(self) -> None:
+        with temporary_directory() as temp_dir:
+            model = ScriptedModel(
+                {
+                    "repairer": [
+                        PLAN,
+                        SELECT,
+                        INVESTIGATION,
+                        PROPOSAL,
+                        review("pass"),
+                    ]
+                }
+            )
+            harness = DeterministicHarness(sandbox=SequenceSandbox([True, True]))
+            prepared = harness.prepare_case(
+                CASE_ROOT, Path(temp_dir), run_id="single_agent_run"
+            )
+            runner = AgentGraphRunner(
+                model,
+                harness,
+                InMemorySaver(),
+                agent_mode="single_agent",
+            )
+
+            paused = runner.start(prepared)
+            result = runner.resume(
+                "single_agent_run", ApprovalDecision(action="approve", feedback="")
+            )
+            config = json.loads(
+                (Path(result.run_dir) / "config.json").read_text(encoding="utf-8")
+            )
+
+            self.assertTrue(paused.awaiting_approval)
+            self.assertEqual(result.status, "verified")
+            self.assertEqual(model.calls, ["repairer"] * 5)
+            self.assertEqual(config["agent_graph"]["mode"], "single_agent")
+
+    def test_no_review_mode_uses_tests_as_terminal_decision(self) -> None:
+        for public_passed, expected_status in ((True, "verified"), (False, "tests_failed")):
+            with self.subTest(public_passed=public_passed):
+                with temporary_directory() as temp_dir:
+                    model = ScriptedModel(script(reviews=[]))
+                    harness = DeterministicHarness(
+                        sandbox=SequenceSandbox(
+                            [public_passed, True] if public_passed else [False]
+                        )
+                    )
+                    prepared = harness.prepare_case(
+                        CASE_ROOT, Path(temp_dir), run_id="no_review_run"
+                    )
+                    runner = AgentGraphRunner(
+                        model,
+                        harness,
+                        InMemorySaver(),
+                        agent_mode="multi_agent_no_review",
+                    )
+
+                    runner.start(prepared)
+                    result = runner.resume(
+                        "no_review_run",
+                        ApprovalDecision(action="approve", feedback=""),
+                    )
+
+                    self.assertEqual(result.status, expected_status)
+                    self.assertNotIn("reviewer", model.calls)
 
     def test_memory_retrieval_reaches_planner_and_verified_run_is_recorded(self) -> None:
         with temporary_directory() as temp_dir:

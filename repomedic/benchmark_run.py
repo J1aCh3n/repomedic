@@ -7,7 +7,12 @@ import uuid
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from repomedic.agent_graph import AgentGraphRunner, AgentRunResult
+from repomedic.agent_graph import (
+    DEFAULT_AGENT_MODE,
+    AgentGraphRunner,
+    AgentMode,
+    AgentRunResult,
+)
 from repomedic.artifacts import ArtifactWriter
 from repomedic.benchmark import BenchmarkSuite
 from repomedic.harness import DeterministicHarness
@@ -20,7 +25,7 @@ from repomedic.prompts import PROMPT_VERSION
 from repomedic.workspace import resolve_within
 
 
-BENCHMARK_PROTOCOL_VERSION = "multi-agent-memory-v2"
+BENCHMARK_PROTOCOL_VERSION = "agent-config-ablation-v1"
 _TERMINAL_STATUSES = {
     "verified",
     "tests_failed",
@@ -61,6 +66,7 @@ def start_benchmark(
     memory_store: EpisodicMemoryStore | None = None,
     memory_limit: int = 3,
     memory_context_budget_chars: int = DEFAULT_MEMORY_CONTEXT_BUDGET_CHARS,
+    agent_mode: AgentMode = DEFAULT_AGENT_MODE,
 ) -> BenchmarkStartResult:
     root = runs_root.resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -80,6 +86,7 @@ def start_benchmark(
         "model": model.model_id,
         "reasoning_effort": getattr(model, "reasoning_effort", None),
         "prompt_version": PROMPT_VERSION,
+        "agent_mode": agent_mode,
         "memory": {
             "enabled": memory_store is not None,
             "database": str(memory_store.path) if memory_store else None,
@@ -103,6 +110,7 @@ def start_benchmark(
                 memory_store=memory_store,
                 memory_limit=memory_limit,
                 memory_context_budget_chars=memory_context_budget_chars,
+                agent_mode=agent_mode,
             ).start(prepared)
         results.append(result)
         record["case_runs"].append(
@@ -123,6 +131,7 @@ def _summary_markdown(summary: dict[str, Any]) -> str:
         f"# Benchmark run: {summary['suite_id']}",
         "",
         f"- Complete: `{str(summary['complete']).lower()}`",
+        f"- Agent mode: `{summary['agent_mode']}`",
         f"- Verified: `{summary['verified']}/{summary['case_count']}`",
         f"- Total input tokens: `{summary['usage']['input_tokens']}`",
         f"- Total output tokens: `{summary['usage']['output_tokens']}`",
@@ -195,6 +204,7 @@ def summarize_benchmark(run_dir: Path) -> dict[str, Any]:
         "model": record["model"],
         "reasoning_effort": record.get("reasoning_effort"),
         "prompt_version": record["prompt_version"],
+        "agent_mode": record.get("agent_mode", DEFAULT_AGENT_MODE),
         "complete": complete,
         "case_count": len(case_rows),
         "verified": status_counts.get("verified", 0),

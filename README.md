@@ -1,9 +1,9 @@
 # RepoMedic
 
-> Early implementation. The deterministic harness and first Agent graph are
-> complete. Twelve development cases now span three fixtures. Their staged v1
-> measurement exposed Reviewer-scope and failure-accounting defects that are
-> corrected in the current v2 protocol.
+> Early implementation. The deterministic harness, configurable Agent graph,
+> and twelve-case development dataset are complete. Single-agent, no-review,
+> and review modes are implemented for a unified ablation, but the new live
+> comparison and matched memory experiment are not yet complete.
 
 RepoMedic is a proposed LangGraph-based multi-agent coding system that turns a small repository issue into a tested patch and an auditable evidence bundle. It is intended to extend the ideas explored in [`langgraph_file_editor`](../langgraph_file_editor/) from controlled file operations to repository-level diagnosis, implementation, testing, reflection, and human approval.
 
@@ -476,8 +476,51 @@ Start a live run with the same frozen model settings used by earlier stages:
 
 ```powershell
 repomedic start-benchmark benchmarks/suites/initial_12.yaml `
-  --model gpt-5.6-terra --reasoning-effort low
+  --model gpt-5.6-terra --reasoning-effort low `
+  --agent-mode multi_agent_review
 ```
+
+## Phase 5 Agent configuration ablation
+
+The current `agent-graph-v5` / `agent-config-ablation-v1` protocol exposes three
+memory-free modes while holding the fixture, schemas, tool restrictions,
+approval gate, Docker tests, and artifact accounting constant:
+
+- `single_agent`: one `repairer` model identity performs planning,
+  investigation decisions, evidence synthesis, coding, and self-review across
+  successive structured calls;
+- `multi_agent_no_review`: Planner, Investigator, and Coder are separate, but a
+  public-test failure terminates without a Reviewer call or reflection;
+- `multi_agent_review`: the full Planner, Investigator, Coder, and Reviewer
+  graph can revise or replan within the recorded limits.
+
+Start the three matched runs with explicit modes and no memory database:
+
+```powershell
+repomedic start-benchmark benchmarks/suites/initial_12.yaml `
+  --model gpt-5.6-terra --reasoning-effort low `
+  --agent-mode single_agent --run-id phase5-single-v1
+repomedic start-benchmark benchmarks/suites/initial_12.yaml `
+  --model gpt-5.6-terra --reasoning-effort low `
+  --agent-mode multi_agent_no_review --run-id phase5-no-review-v1
+repomedic start-benchmark benchmarks/suites/initial_12.yaml `
+  --model gpt-5.6-terra --reasoning-effort low `
+  --agent-mode multi_agent_review --run-id phase5-review-v1
+```
+
+After every case reaches a terminal status, generate the matched comparison:
+
+```powershell
+repomedic compare-configurations `
+  runs/benchmarks/initial_12/phase5-single-v1 `
+  runs/benchmarks/initial_12/phase5-no-review-v1 `
+  runs/benchmarks/initial_12/phase5-review-v1 `
+  --output-dir runs/configuration-ablation/phase5-v1
+```
+
+The comparator rejects incomplete runs, enabled memory, wrong modes, different
+case ordering, or mismatched suite, model, reasoning, prompt, and protocol. Old
+staged v1/v2 runs cannot be merged into this result.
 
 ## Phase 6 episodic memory
 
@@ -512,6 +555,7 @@ Enable memory for one run or benchmark with an explicit database:
 ```powershell
 repomedic run-agent benchmarks/cases/order_service_002 `
   --model gpt-5.6-terra --reasoning-effort low `
+  --agent-mode multi_agent_review `
   --memory-db runs/memory/episodic.sqlite `
   --memory-context-budget-chars 2400
 ```
@@ -532,9 +576,11 @@ evidence only; it does not establish holdout generalization:
 
 ```powershell
 repomedic start-benchmark benchmarks/suites/order_service_4.yaml `
-  --model gpt-5.6-terra --reasoning-effort low --run-id no-memory
+  --model gpt-5.6-terra --reasoning-effort low `
+  --agent-mode multi_agent_review --run-id no-memory
 repomedic start-benchmark benchmarks/suites/order_service_4.yaml `
-  --model gpt-5.6-terra --reasoning-effort low --run-id with-memory `
+  --model gpt-5.6-terra --reasoning-effort low `
+  --agent-mode multi_agent_review --run-id with-memory `
   --memory-db runs/memory/episodic.sqlite
 ```
 

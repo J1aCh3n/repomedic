@@ -10,10 +10,11 @@ from tests.helpers import temporary_directory
 def _summary(*, verified: int, statuses: list[str]) -> dict:
     return {
         "suite_id": "family_suite",
-        "protocol_version": "multi-agent-memory-v2",
+        "protocol_version": "agent-config-ablation-v1",
         "model": "scripted",
         "reasoning_effort": None,
-        "prompt_version": "agent-graph-v4",
+        "prompt_version": "agent-graph-v5",
+        "agent_mode": "multi_agent_review",
         "complete": True,
         "case_count": 2,
         "verified": verified,
@@ -42,6 +43,7 @@ def _write_benchmark(run_dir: Path, *, memory_enabled: bool) -> None:
         else None
     )
     record = {
+        "agent_mode": "multi_agent_review",
         "memory": {
             "enabled": memory_enabled,
             "context_budget_chars": 2400,
