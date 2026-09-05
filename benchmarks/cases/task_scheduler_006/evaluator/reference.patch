@@ -1,0 +1,12 @@
+diff --git a/task_scheduler/parser.py b/task_scheduler/parser.py
+--- a/task_scheduler/parser.py
++++ b/task_scheduler/parser.py
+@@ -8,7 +8,7 @@ def parse_start(value: str) -> datetime:
+         raise ValueError("start time must be ISO-8601") from error
+     if parsed.tzinfo is None or parsed.utcoffset() is None:
+         raise ValueError("start time must include a timezone")
+-    return parsed
++    return parsed.astimezone(UTC)
+ 
+ 
+ def parse_duration(value: str) -> int:

@@ -1,0 +1,37 @@
+case_id: task_scheduler_006
+category: cross_module_contract_bug
+fixture:
+  id: task_scheduler
+  version: task_scheduler-v1
+issue: >-
+  Start times parsed from ISO-8601 input are reaching Scheduler and storage with
+  their original timezone offset. Restore the parser-to-scheduler contract:
+  every accepted start time must be an equivalent timezone-aware UTC datetime,
+  while inputs without a timezone must still be rejected.
+runnable_entry_point:
+  argv: [python, -m, task_scheduler.cli]
+  cwd: repo
+tests:
+  public:
+    argv: [python, -m, unittest, discover, -s, tests, -v]
+    cwd: repo
+  evaluator:
+    argv: [python, -m, unittest, discover, -s, hidden_tests, -v]
+    cwd: evaluator
+paths:
+  allowed:
+    - task_scheduler/parser.py
+    - task_scheduler/scheduler.py
+  forbidden:
+    - .git
+    - .env
+    - tests
+    - evaluator
+limits:
+  wall_time_seconds: 60
+  tool_calls: 20
+  repair_iterations: 2
+expected_behavior:
+  - Offset-aware ISO-8601 inputs are converted to the equivalent UTC datetime.
+  - Scheduler persists parsed task start times with UTC timezone information.
+  - Naive inputs without a timezone continue to raise `ValueError`.
