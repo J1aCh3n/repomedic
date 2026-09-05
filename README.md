@@ -18,6 +18,23 @@ credentials and never starts a live-model benchmark.
 
 The project must demonstrate real Agent-system engineering rather than a collection of role prompts. A deterministic orchestrator owns state transitions, budgets, retries, and safety. LLM agents perform only the steps that require model judgment.
 
+## Quick start: zero-API demo
+
+Requirements: Python 3.11 or 3.12 and a running Docker Desktop installation.
+From the repository root:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python -m pip install -e .
+.\.venv\Scripts\python -m scripts.demo
+```
+
+The demo prints the proposed diff and waits for you to type `approve` before it
+runs the public and evaluator tests in the pinned, network-disabled Docker
+sandbox. It uses fixed `ScriptedModel` responses, requires no API key, and does
+not measure live-model repair ability. See [`docs/demo.md`](docs/demo.md) for
+POSIX commands, expected output, artifacts, and troubleshooting.
+
 ## Project objective
 
 Given:
@@ -409,7 +426,9 @@ python -m scripts.validate_phase4
 ```
 
 The expected status is `verified`. This gate uses fixed model responses, pauses
-at the real approval node, and spends no API credits.
+at the real approval node, records a scripted approval after displaying the
+diff, and spends no API credits. Use `python -m scripts.demo` for the interactive
+version.
 
 ## Four-case benchmark checkpoint
 
@@ -651,3 +670,6 @@ It found no measurable Reviewer or memory success-rate uplift on this subset.
 
 RepoMedic, including its synthetic benchmark fixtures and tests, is released
 under the [MIT License](LICENSE).
+
+The local release checks and the one remaining hosted-CI boundary are recorded
+in [`docs/release-checklist.md`](docs/release-checklist.md).
