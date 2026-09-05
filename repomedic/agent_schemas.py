@@ -3,6 +3,11 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+MAX_INVESTIGATION_SEARCHES = 6
+MAX_INVESTIGATION_READS = 8
+MAX_RELEVANT_FILES = 12
+
+
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -15,8 +20,8 @@ class PlanReport(StrictModel):
 
 
 class InvestigationRequest(StrictModel):
-    searches: tuple[str, ...] = Field(max_length=6)
-    reads: tuple[str, ...] = Field(max_length=8)
+    searches: tuple[str, ...] = Field(max_length=MAX_INVESTIGATION_SEARCHES)
+    reads: tuple[str, ...] = Field(max_length=MAX_INVESTIGATION_READS)
 
     @model_validator(mode="after")
     def require_an_operation(self) -> "InvestigationRequest":
@@ -41,7 +46,9 @@ class Evidence(StrictModel):
 class InvestigationReport(StrictModel):
     root_cause: str = Field(min_length=1, max_length=4000)
     evidence: tuple[Evidence, ...] = Field(min_length=1, max_length=12)
-    relevant_files: tuple[str, ...] = Field(min_length=1, max_length=12)
+    relevant_files: tuple[str, ...] = Field(
+        min_length=1, max_length=MAX_RELEVANT_FILES
+    )
 
 
 class TextReplacement(StrictModel):
@@ -66,6 +73,7 @@ class ReviewReport(StrictModel):
     verdict: Literal["pass", "revise", "replan", "stop"]
     reasons: tuple[str, ...] = Field(min_length=1, max_length=8)
     feedback: str = Field(default="", max_length=4000)
+    requested_paths: tuple[str, ...] = Field(default=(), max_length=8)
 
 
 class ApprovalDecision(StrictModel):

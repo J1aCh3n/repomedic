@@ -1,4 +1,5 @@
 from collections import deque
+from dataclasses import replace
 from pathlib import Path
 import unittest
 
@@ -68,6 +69,11 @@ def review(verdict: str) -> dict[str, object]:
         "verdict": verdict,
         "reasons": [f"Reviewer selected {verdict}."],
         "feedback": "Try another minimal edit." if verdict != "pass" else "",
+        "requested_paths": (
+            ["order_service/pricing.py"]
+            if verdict in {"revise", "replan"}
+            else []
+        ),
     }
 
 
@@ -158,6 +164,30 @@ class AgentGraphTests(unittest.TestCase):
                     )
                     self.assertEqual(result.status, "verified")
 
+    def test_reviewer_cannot_request_forbidden_edit_paths(self) -> None:
+        with temporary_directory() as temp_dir:
+            responses = script(reviews=[])
+            responses["reviewer"] = [
+                {
+                    "verdict": "revise",
+                    "reasons": ["Add another public test."],
+                    "feedback": "Edit the tests.",
+                    "requested_paths": ["tests/test_order_service.py"],
+                }
+            ]
+            model = ScriptedModel(responses)
+            runner, paused = self._start(
+                temp_dir, model, SequenceSandbox([True])
+            )
+
+            result = runner.resume(
+                "graph_run", ApprovalDecision(action="approve", feedback="")
+            )
+
+            self.assertEqual(result.status, "review_error")
+            self.assertIn("outside the edit policy", result.error or "")
+            self.assertEqual(model.calls.count("coder"), 1)
+
     def test_human_revision_returns_to_coder_without_applying_proposal(self) -> None:
         with temporary_directory() as temp_dir:
             model = ScriptedModel(script(reviews=[], proposals=[PROPOSAL, PROPOSAL]))
@@ -217,6 +247,36 @@ class AgentGraphTests(unittest.TestCase):
                     _, result = self._start(temp_dir, model, SequenceSandbox([]))
                     self.assertEqual(result.status, expected)
                     self.assertFalse(result.awaiting_approval)
+                    if expected == "model_error":
+                        self.assertEqual((result.usage or {})["model_calls"], 1)
+                        self.assertEqual((result.usage or {})["tool_calls"], 1)
+
+    def test_tool_failure_preserves_completed_model_and_tool_calls(self) -> None:
+        with temporary_directory() as temp_dir:
+            sandbox = SequenceSandbox([True])
+            harness = DeterministicHarness(sandbox=sandbox)
+            prepared = harness.prepare_case(
+                CASE_ROOT, Path(temp_dir), run_id="budget_run"
+            )
+            prepared = replace(
+                prepared,
+                manifest=replace(
+                    prepared.manifest,
+                    limits=replace(prepared.manifest.limits, tool_calls=7),
+                ),
+            )
+            model = ScriptedModel(script(reviews=["revise"]))
+            runner = AgentGraphRunner(model, harness, InMemorySaver())
+            paused = runner.start(prepared)
+
+            result = runner.resume(
+                "budget_run", ApprovalDecision(action="approve", feedback="")
+            )
+
+            self.assertTrue(paused.awaiting_approval)
+            self.assertEqual(result.status, "tool_error")
+            self.assertEqual((result.usage or {})["model_calls"], 6)
+            self.assertEqual((result.usage or {})["tool_calls"], 7)
 
     def test_iteration_limit_stops_repeated_revision(self) -> None:
         with temporary_directory() as temp_dir:

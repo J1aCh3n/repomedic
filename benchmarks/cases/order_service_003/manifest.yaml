@@ -27,7 +27,7 @@ paths:
     - evaluator
 limits:
   wall_time_seconds: 60
-  tool_calls: 20
+  tool_calls: 43
   repair_iterations: 2
 expected_behavior:
   - An out-of-stock reservation raises `OutOfStockError` without changing stock.

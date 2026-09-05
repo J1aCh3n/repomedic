@@ -1,9 +1,9 @@
 # RepoMedic benchmarks
 
 The current benchmark implementation includes an eight-case development suite,
-deterministic harness, and Agent graph. The first four cases have recorded
-live-model results, and the staged eight-case checkpoint is recorded in
-`results/initial_8_20260905.md`.
+deterministic harness, and Agent graph. The preserved v1 staged result and its
+failure analysis are in `results/initial_8_20260905.md`; the current graph uses
+the remediated v2 prompt and protocol.
 
 ## Layout
 
@@ -48,6 +48,9 @@ python -m scripts.validate_suite benchmarks/suites/initial_8.yaml
 ```
 
 The command writes its evidence below `runs/suite-gates/initial_8/<run-id>/`.
+All current manifests reserve at least 43 bounded repository operations. That
+minimum covers the schema's maximum initial investigation and two direct repair
+iterations; repeated Reviewer replanning remains bounded by the same cap.
 
 With Docker Desktop running, reproduce every faulty state and reference repair:
 

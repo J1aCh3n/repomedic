@@ -23,8 +23,13 @@ from repomedic.agent_tools import (
 from repomedic.artifacts import ArtifactWriter
 from repomedic.harness import DeterministicHarness, PreparedRun
 from repomedic.manifest import load_manifest
-from repomedic.model_clients import ModelClientError, ModelResult, StructuredModel
-from repomedic.models import PolicyReport, RunOutcome, TestResult
+from repomedic.model_clients import (
+    ModelClientError,
+    ModelResult,
+    ModelUsage,
+    StructuredModel,
+)
+from repomedic.models import Change, PolicyReport, RunOutcome, TestResult
 from repomedic.policy import build_patch, collect_changes, evaluate_policy
 from repomedic.prompts import (
     CODER_PROMPT,
@@ -87,16 +92,22 @@ def _thread_config(run_id: str) -> dict[str, dict[str, str]]:
     return {"configurable": {"thread_id": run_id}}
 
 
+def _add_model_usage(
+    usage: dict[str, int], model_usage: ModelUsage
+) -> dict[str, int]:
+    updated = dict(usage)
+    updated["input_tokens"] += model_usage.input_tokens
+    updated["output_tokens"] += model_usage.output_tokens
+    updated["total_tokens"] += model_usage.total_tokens
+    updated["latency_ms"] += model_usage.latency_ms
+    updated["calls"] += 1
+    return updated
+
+
 def _add_usage(
     usage: dict[str, int], result: ModelResult[Any]
 ) -> dict[str, int]:
-    updated = dict(usage)
-    updated["input_tokens"] += result.usage.input_tokens
-    updated["output_tokens"] += result.usage.output_tokens
-    updated["total_tokens"] += result.usage.total_tokens
-    updated["latency_ms"] += result.usage.latency_ms
-    updated["calls"] += 1
-    return updated
+    return _add_model_usage(usage, result.usage)
 
 
 class AgentGraphRunner:
@@ -207,27 +218,61 @@ class AgentGraphRunner:
         output_type: type[Any],
         usage: dict[str, int],
     ) -> tuple[Any, dict[str, int]]:
-        result = self.model.generate(
-            agent=agent,
-            instructions=instructions,
-            input_data=input_data,
-            output_type=output_type,
-        )
+        try:
+            result = self.model.generate(
+                agent=agent,
+                instructions=instructions,
+                input_data=input_data,
+                output_type=output_type,
+            )
+        except ModelClientError as error:
+            updated = _add_model_usage(usage, error.usage)
+            usage.clear()
+            usage.update(updated)
+            raise
         return result.output, _add_usage(usage, result)
 
-    def _model_failure(self, state: AgentState, agent: str, error: Exception) -> AgentState:
+    def _model_failure(
+        self,
+        state: AgentState,
+        agent: str,
+        error: Exception,
+        *,
+        usage: dict[str, int],
+        tool_calls: int,
+    ) -> AgentState:
         message = str(error)
         self._writer(state).append_trace(
             "model_failed", {"agent": agent, "error": message}
         )
-        return {"status": "model_error", "error": message}
+        return {
+            "status": "model_error",
+            "error": message,
+            "usage": usage,
+            "model_calls": usage["calls"],
+            "tool_calls": tool_calls,
+        }
 
-    def _tool_failure(self, state: AgentState, operation: str, error: Exception) -> AgentState:
+    def _tool_failure(
+        self,
+        state: AgentState,
+        operation: str,
+        error: Exception,
+        *,
+        usage: dict[str, int],
+        tool_calls: int,
+    ) -> AgentState:
         message = str(error)
         self._writer(state).append_trace(
             "tool_failed", {"operation": operation, "error": message}
         )
-        return {"status": "tool_error", "error": message}
+        return {
+            "status": "tool_error",
+            "error": message,
+            "usage": usage,
+            "model_calls": usage["calls"],
+            "tool_calls": tool_calls,
+        }
 
     def _planner(self, state: AgentState) -> AgentState:
         usage = dict(state["usage"])
@@ -250,9 +295,13 @@ class AgentGraphRunner:
                 usage=usage,
             )
         except ModelClientError as error:
-            return self._model_failure(state, "planner", error)
+            return self._model_failure(
+                state, "planner", error, usage=usage, tool_calls=tool_calls
+            )
         except ToolExecutionError as error:
-            return self._tool_failure(state, "list_files", error)
+            return self._tool_failure(
+                state, "list_files", error, usage=usage, tool_calls=tool_calls
+            )
         data = plan.model_dump(mode="json")
         self._writer(state).write_json("plan.json", data)
         self._writer(state).append_trace(
@@ -308,9 +357,13 @@ class AgentGraphRunner:
                 usage=usage,
             )
         except ModelClientError as error:
-            return self._model_failure(state, "investigator", error)
+            return self._model_failure(
+                state, "investigator", error, usage=usage, tool_calls=tool_calls
+            )
         except ToolExecutionError as error:
-            return self._tool_failure(state, "investigation", error)
+            return self._tool_failure(
+                state, "investigation", error, usage=usage, tool_calls=tool_calls
+            )
         data = report.model_dump(mode="json")
         self._writer(state).write_json("investigation.json", data)
         self._writer(state).append_trace(
@@ -356,9 +409,17 @@ class AgentGraphRunner:
             tool_calls = self._consume_tool(state, tool_calls)
             preview = tools.preview(proposal.edits)
         except ModelClientError as error:
-            return self._model_failure(state, "coder", error)
+            return self._model_failure(
+                state, "coder", error, usage=usage, tool_calls=tool_calls
+            )
         except ToolExecutionError as error:
-            return self._tool_failure(state, "proposal_preview", error)
+            return self._tool_failure(
+                state,
+                "proposal_preview",
+                error,
+                usage=usage,
+                tool_calls=tool_calls,
+            )
         data = proposal.model_dump(mode="json")
         self._writer(state).write_text("proposal.diff", preview)
         self._writer(state).append_trace(
@@ -411,7 +472,13 @@ class AgentGraphRunner:
             tool_calls = self._consume_tool(state, tool_calls)
             self._tools(state).apply(proposal.edits)
         except (ValidationError, ToolExecutionError) as error:
-            return self._tool_failure(state, "apply_patch", error)
+            return self._tool_failure(
+                state,
+                "apply_patch",
+                error,
+                usage=dict(state["usage"]),
+                tool_calls=tool_calls,
+            )
         iteration = state["iterations"] + 1
         self._writer(state).append_trace(
             "patch_applied", {"iteration": iteration, "edits": len(proposal.edits)}
@@ -483,12 +550,20 @@ class AgentGraphRunner:
                     "diff": diff,
                     "public_test": state["public_result"],
                     "policy": state["policy"],
+                    "allowed_paths": state["allowed_paths"],
+                    "forbidden_paths": state["forbidden_paths"],
                 },
                 output_type=ReviewReport,
                 usage=usage,
             )
         except ModelClientError as error:
-            return self._model_failure(state, "reviewer", error)
+            return self._model_failure(
+                state,
+                "reviewer",
+                error,
+                usage=usage,
+                tool_calls=state["tool_calls"],
+            )
         data = review.model_dump(mode="json")
         self._writer(state).write_json("review.json", data)
         self._writer(state).append_trace(
@@ -497,6 +572,7 @@ class AgentGraphRunner:
                 "agent": "reviewer",
                 "prompt_version": PROMPT_VERSION,
                 "verdict": review.verdict,
+                "requested_paths": list(review.requested_paths),
             },
         )
         updates: AgentState = {
@@ -507,7 +583,10 @@ class AgentGraphRunner:
             "status": "running",
         }
         public = TestResult(**state["public_result"])
-        if review.verdict == "pass" and (
+        review_path_error = self._review_path_error(state, review)
+        if review_path_error:
+            updates.update(status="review_error", error=review_path_error)
+        elif review.verdict == "pass" and (
             public.exit_code != 0 or public.timed_out or public.infrastructure_error
         ):
             updates.update(
@@ -522,6 +601,27 @@ class AgentGraphRunner:
         elif review.verdict == "stop":
             updates.update(status="stopped")
         return updates
+
+    @staticmethod
+    def _review_path_error(state: AgentState, review: ReviewReport) -> str | None:
+        requested_paths = tuple(
+            path.replace("\\", "/") for path in review.requested_paths
+        )
+        if review.verdict in {"revise", "replan"} and not requested_paths:
+            return "Reviewer requested a revision without an actionable path"
+        if review.verdict in {"pass", "stop"} and requested_paths:
+            return f"Reviewer returned {review.verdict} with requested edit paths"
+        if not requested_paths:
+            return None
+        policy = evaluate_policy(
+            tuple(Change(path=path, kind="modified") for path in requested_paths),
+            allowed=tuple(state["allowed_paths"]),
+            forbidden=tuple(state["forbidden_paths"]),
+        )
+        if policy.compliant:
+            return None
+        paths = ", ".join(violation.path for violation in policy.violations)
+        return f"Reviewer requested paths outside the edit policy: {paths}"
 
     @staticmethod
     def _prepared(state: AgentState) -> PreparedRun:

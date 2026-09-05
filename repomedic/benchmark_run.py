@@ -16,7 +16,7 @@ from repomedic.prompts import PROMPT_VERSION
 from repomedic.workspace import resolve_within
 
 
-BENCHMARK_PROTOCOL_VERSION = "multi-agent-review-v1"
+BENCHMARK_PROTOCOL_VERSION = "multi-agent-review-v2"
 _TERMINAL_STATUSES = {
     "verified",
     "tests_failed",

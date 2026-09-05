@@ -31,7 +31,7 @@ paths:
     - evaluator
 limits:
   wall_time_seconds: 60
-  tool_calls: 24
+  tool_calls: 43
   repair_iterations: 2
 expected_behavior:
   - Rescheduling a stored task replaces only its start time.

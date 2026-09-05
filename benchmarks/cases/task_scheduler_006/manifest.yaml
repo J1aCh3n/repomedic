@@ -29,7 +29,7 @@ paths:
     - evaluator
 limits:
   wall_time_seconds: 60
-  tool_calls: 20
+  tool_calls: 43
   repair_iterations: 2
 expected_behavior:
   - Offset-aware ISO-8601 inputs are converted to the equivalent UTC datetime.

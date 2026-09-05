@@ -1,7 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
-from repomedic.agent_schemas import PlanReport
+from repomedic.agent_schemas import CodeProposal, PlanReport
 from repomedic.model_clients import (
     ModelOutputError,
     OpenAIResponsesModel,
@@ -34,6 +34,29 @@ class FakeOpenAI:
         self.responses = FakeResponses()
 
 
+class InvalidResponses:
+    def parse(self, **kwargs):
+        del kwargs
+        return CodeProposal.model_validate(
+            {
+                "summary": "No change needed.",
+                "edits": [
+                    {
+                        "path": "service.py",
+                        "old": "same",
+                        "new": "same",
+                        "rationale": "No change needed.",
+                    }
+                ],
+            }
+        )
+
+
+class InvalidOpenAI:
+    def __init__(self) -> None:
+        self.responses = InvalidResponses()
+
+
 class ModelClientTests(unittest.TestCase):
     def test_scripted_model_validates_every_response(self) -> None:
         model = ScriptedModel({"planner": [{"acceptance_criteria": []}]})
@@ -64,6 +87,20 @@ class ModelClientTests(unittest.TestCase):
         self.assertFalse(client.responses.arguments["store"])
         self.assertEqual(client.responses.arguments["reasoning"], {"effort": "low"})
         self.assertEqual(result.usage.total_tokens, 15)
+
+    def test_openai_adapter_wraps_parser_validation_errors(self) -> None:
+        model = OpenAIResponsesModel("test-model", client=InvalidOpenAI())
+
+        with self.assertRaises(ModelOutputError) as raised:
+            model.generate(
+                agent="coder",
+                instructions="Propose a real edit.",
+                input_data={"issue": "bug"},
+                output_type=CodeProposal,
+            )
+
+        self.assertIn("invalid coder output", str(raised.exception))
+        self.assertGreaterEqual(raised.exception.usage.latency_ms, 0)
 
 
 if __name__ == "__main__":

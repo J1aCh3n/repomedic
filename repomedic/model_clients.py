@@ -14,6 +14,10 @@ OutputT = TypeVar("OutputT", bound=BaseModel)
 class ModelClientError(RuntimeError):
     """Raised when a configured model call fails."""
 
+    def __init__(self, message: str, *, usage: "ModelUsage | None" = None) -> None:
+        super().__init__(message)
+        self.usage = usage or ModelUsage()
+
 
 class ModelOutputError(ModelClientError):
     """Raised when model output does not satisfy its declared schema."""
@@ -116,23 +120,38 @@ class OpenAIResponsesModel:
                 store=False,
                 **request,
             )
+        except ValidationError as error:
+            usage = ModelUsage(latency_ms=round((monotonic() - started) * 1000))
+            raise ModelOutputError(
+                f"invalid {agent} output: {error}", usage=usage
+            ) from error
         except OpenAIError as error:
-            raise ModelClientError(f"{agent} Responses API call failed: {error}") from error
+            usage = ModelUsage(latency_ms=round((monotonic() - started) * 1000))
+            raise ModelClientError(
+                f"{agent} Responses API call failed: {error}", usage=usage
+            ) from error
+        response_usage = response.usage
+        usage = ModelUsage(
+            input_tokens=(
+                getattr(response_usage, "input_tokens", 0) if response_usage else 0
+            ),
+            output_tokens=(
+                getattr(response_usage, "output_tokens", 0) if response_usage else 0
+            ),
+            total_tokens=(
+                getattr(response_usage, "total_tokens", 0) if response_usage else 0
+            ),
+            latency_ms=round((monotonic() - started) * 1000),
+        )
         parsed = response.output_parsed
         if parsed is None:
-            raise ModelOutputError(f"{agent} returned no parsed structured output")
+            raise ModelOutputError(
+                f"{agent} returned no parsed structured output", usage=usage
+            )
         try:
             output = output_type.model_validate(parsed)
         except ValidationError as error:
-            raise ModelOutputError(f"invalid {agent} output: {error}") from error
-        usage = response.usage
-        latency_ms = round((monotonic() - started) * 1000)
-        return ModelResult(
-            output=output,
-            usage=ModelUsage(
-                input_tokens=getattr(usage, "input_tokens", 0) if usage else 0,
-                output_tokens=getattr(usage, "output_tokens", 0) if usage else 0,
-                total_tokens=getattr(usage, "total_tokens", 0) if usage else 0,
-                latency_ms=latency_ms,
-            ),
-        )
+            raise ModelOutputError(
+                f"invalid {agent} output: {error}", usage=usage
+            ) from error
+        return ModelResult(output=output, usage=usage)

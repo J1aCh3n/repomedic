@@ -45,6 +45,17 @@ class ManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(ManifestError, "python"):
                 load_manifest(path)
 
+    def test_rejects_budget_that_cannot_cover_declared_repairs(self) -> None:
+        text = CASE_MANIFEST.read_text(encoding="utf-8").replace(
+            "tool_calls: 43", "tool_calls: 42"
+        )
+        with temporary_directory() as temp_dir:
+            path = Path(temp_dir) / "manifest.yaml"
+            path.write_text(text, encoding="utf-8")
+
+            with self.assertRaisesRegex(ManifestError, "at least 43"):
+                load_manifest(path)
+
 
 if __name__ == "__main__":
     unittest.main()

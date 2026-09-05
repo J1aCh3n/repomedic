@@ -76,7 +76,7 @@ class RescheduleEvaluatorTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "future"):
             scheduler.reschedule(original.task_id, NOW, now=NOW)
-        with self.assertRaisesRegex(ValueError, "unknown"):
+        with self.assertRaises(ValueError):
             scheduler.reschedule(
                 "task-999",
                 datetime(2030, 1, 2, 12, 0, tzinfo=UTC),

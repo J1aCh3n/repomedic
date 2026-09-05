@@ -3,6 +3,11 @@ from typing import Any
 
 import yaml
 
+from repomedic.agent_schemas import (
+    MAX_INVESTIGATION_READS,
+    MAX_INVESTIGATION_SEARCHES,
+    MAX_RELEVANT_FILES,
+)
 from repomedic.models import (
     CaseManifest,
     CommandSpec,
@@ -125,4 +130,15 @@ def load_manifest(path: Path) -> CaseManifest:
 
     if not manifest.case_id.replace("_", "").isalnum():
         raise ManifestError("case_id may contain only letters, digits, and underscores")
+    minimum_tool_calls = (
+        1
+        + MAX_INVESTIGATION_SEARCHES
+        + MAX_INVESTIGATION_READS
+        + manifest.limits.repair_iterations * (MAX_RELEVANT_FILES + 2)
+    )
+    if manifest.limits.tool_calls < minimum_tool_calls:
+        raise ManifestError(
+            "limits.tool_calls must be at least "
+            f"{minimum_tool_calls} for the declared repair iterations"
+        )
     return manifest

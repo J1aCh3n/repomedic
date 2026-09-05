@@ -1,8 +1,9 @@
 # RepoMedic
 
 > Early implementation. The deterministic harness and first Agent graph are
-> complete. Eight development cases now span two fixtures; the first four have
-> one recorded live-model attempt each.
+> complete. Eight development cases now span two fixtures. Their staged v1
+> measurement exposed Reviewer-scope and failure-accounting defects that are
+> corrected in the current v2 protocol.
 
 RepoMedic is a proposed LangGraph-based multi-agent coding system that turns a small repository issue into a tested patch and an auditable evidence bundle. It is intended to extend the ideas explored in [`langgraph_file_editor`](../langgraph_file_editor/) from controlled file operations to repository-level diagnosis, implementation, testing, reflection, and human approval.
 
@@ -449,3 +450,11 @@ Start the next measured run with the same protocol used for the first four:
 repomedic start-benchmark benchmarks/suites/initial_8.yaml `
   --model gpt-5.6-terra --reasoning-effort low
 ```
+
+The preserved v1 staged result verified 6/8 cases and is documented in
+[`benchmarks/results/initial_8_20260905.md`](benchmarks/results/initial_8_20260905.md).
+The current `agent-graph-v2` / `multi-agent-review-v2` implementation prevents
+Reviewer revisions outside the manifest edit allowlist, records failed model
+and tool attempts, validates that tool budgets cover the declared direct repair
+path, and aligns hidden assertions with the manifest contract. These are
+protocol changes, so future v2 results must not be merged with the v1 rate.
