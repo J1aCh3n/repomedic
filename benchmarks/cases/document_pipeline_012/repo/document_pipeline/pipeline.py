@@ -1,0 +1,16 @@
+from pathlib import Path
+
+from document_pipeline.exporter import render_markdown, write_output
+from document_pipeline.loader import load_document
+from document_pipeline.transform import transform_document
+
+
+def process(
+    source: Path,
+    destination: Path,
+) -> str:
+    document = load_document(source)
+    transformed = transform_document(document)
+    rendered = render_markdown(transformed)
+    write_output(destination, rendered)
+    return rendered

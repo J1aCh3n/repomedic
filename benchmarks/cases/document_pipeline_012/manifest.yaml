@@ -1,0 +1,39 @@
+case_id: document_pipeline_012
+category: small_feature
+fixture:
+  id: document_pipeline
+  version: document_pipeline-v1
+issue: >-
+  Add an opt-in `--uppercase-title` conversion mode. The CLI flag must flow
+  through `process(..., uppercase_title=True)` to transformation, where only
+  the normalized title is uppercased. Paragraph text and source attribution
+  must not change, and omitting the option must preserve current output.
+runnable_entry_point:
+  argv: [python, -m, document_pipeline.cli]
+  cwd: repo
+tests:
+  public:
+    argv: [python, -m, unittest, discover, -s, tests, -v]
+    cwd: repo
+  evaluator:
+    argv: [python, -m, unittest, discover, -s, hidden_tests, -v]
+    cwd: evaluator
+paths:
+  allowed:
+    - document_pipeline/cli.py
+    - document_pipeline/pipeline.py
+    - document_pipeline/transform.py
+  forbidden:
+    - .git
+    - .env
+    - tests
+    - evaluator
+limits:
+  wall_time_seconds: 60
+  tool_calls: 43
+  repair_iterations: 2
+expected_behavior:
+  - The CLI accepts `--uppercase-title` as an optional flag.
+  - Programmatic callers can request uppercase-title conversion.
+  - Only the normalized title is uppercased when the option is enabled.
+  - The default conversion output remains unchanged.

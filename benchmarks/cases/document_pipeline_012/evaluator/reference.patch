@@ -1,0 +1,51 @@
+diff --git a/document_pipeline/cli.py b/document_pipeline/cli.py
+--- a/document_pipeline/cli.py
++++ b/document_pipeline/cli.py
+@@ -8,8 +8,13 @@ def main(argv: list[str] | None = None) -> int:
+     parser = ArgumentParser(description="Convert a plain-text document to Markdown")
+     parser.add_argument("source", type=Path)
+     parser.add_argument("destination", type=Path)
++    parser.add_argument("--uppercase-title", action="store_true")
+     args = parser.parse_args(argv)
+-    process(args.source, args.destination)
++    process(
++        args.source,
++        args.destination,
++        uppercase_title=args.uppercase_title,
++    )
+     print(args.destination)
+     return 0
+ 
+diff --git a/document_pipeline/pipeline.py b/document_pipeline/pipeline.py
+--- a/document_pipeline/pipeline.py
++++ b/document_pipeline/pipeline.py
+@@ -7,9 +7,11 @@ from document_pipeline.transform import transform_document
+ def process(
+     source: Path,
+     destination: Path,
++    *,
++    uppercase_title: bool = False,
+ ) -> str:
+     document = load_document(source)
+-    transformed = transform_document(document)
++    transformed = transform_document(document, uppercase_title=uppercase_title)
+     rendered = render_markdown(transformed)
+     write_output(destination, rendered)
+     return rendered
+diff --git a/document_pipeline/transform.py b/document_pipeline/transform.py
+--- a/document_pipeline/transform.py
++++ b/document_pipeline/transform.py
+@@ -5,8 +5,12 @@ def normalize_whitespace(value: str) -> str:
+     return " ".join(value.split())
+ 
+ 
+-def transform_document(document: Document) -> Document:
++def transform_document(
++    document: Document, *, uppercase_title: bool = False
++) -> Document:
+     title = normalize_whitespace(document.title)
++    if uppercase_title:
++        title = title.upper()
+     return Document(
+         title=title,
+         paragraphs=tuple(

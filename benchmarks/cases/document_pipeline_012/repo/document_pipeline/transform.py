@@ -1,0 +1,16 @@
+from document_pipeline.models import Document
+
+
+def normalize_whitespace(value: str) -> str:
+    return " ".join(value.split())
+
+
+def transform_document(document: Document) -> Document:
+    title = normalize_whitespace(document.title)
+    return Document(
+        title=title,
+        paragraphs=tuple(
+            normalize_whitespace(paragraph) for paragraph in document.paragraphs
+        ),
+        source=document.source,
+    )
