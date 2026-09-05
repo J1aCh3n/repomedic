@@ -32,10 +32,12 @@ Memory is opt-in for a run or benchmark:
 
 ```powershell
 repomedic run-agent CASE_DIR --model gpt-5.6-terra `
-  --memory-db runs/memory/episodic.sqlite
+  --memory-db runs/memory/episodic.sqlite `
+  --memory-context-budget-chars 2400
 
 repomedic start-benchmark SUITE_PATH --model gpt-5.6-terra `
-  --memory-db runs/memory/episodic.sqlite
+  --memory-db runs/memory/episodic.sqlite `
+  --memory-context-budget-chars 2400
 ```
 
 If the file does not exist, RepoMedic creates the SQLite database and schema.
@@ -45,8 +47,11 @@ same setting. A run without `--memory-db` neither reads nor writes episodic
 memory.
 
 The explicit flag is useful while running a measured memory/no-memory ablation.
-For ordinary production use, it is probably too manual; see the proposed
-repository-level configuration below.
+Each run also records a logical corpus snapshot: the entry count and a stable
+hash over sorted entry/content hashes. This identifies the memory contents at
+retrieval time even though the SQLite file may receive later verified writes.
+For ordinary production use, explicit flags are probably too manual; see the
+proposed repository-level configuration below.
 
 ## What a memory entry contains
 
@@ -132,20 +137,22 @@ score       = shared tokens with current issue + 3 when fixture IDs match
 
 Common stop words are ignored. The current case ID is excluded, matches are
 sorted deterministically, and the default retrieval limit is three entries.
-This is not vector search or semantic embedding retrieval.
+Text fields are truncated to 300 characters, each path to 120 characters, and
+each path list to three items before ranked entries are greedily packed into the
+configured total character budget. This is not vector search or semantic
+embedding retrieval.
 
 ## Important clarification about context growth
 
 Enabling one SQLite database for every run does not inject the entire database
-into every prompt. The database is external storage. Only the top `k` retrieved
-entries are placed into the Planner input, where `k` is `--memory-limit` and is
-three by default.
+into every prompt. The database is external storage. The Planner receives only
+ranked entries that satisfy both the count limit and a total compact-JSON
+character budget, 2400 characters by default. `memory.json` records the exact
+injected payload and its character count.
 
-However, the current implementation has an important production limitation:
-it limits entry count but does not yet enforce a total character or token budget
-for retrieved lessons. A small number of unusually verbose entries could still
-inflate the Planner context. The database also has no current retention,
-deduplication across different runs, or consolidation policy.
+This is a deterministic proxy rather than a tokenizer-specific token budget.
+The database also has no current retention, deduplication across different
+runs, or consolidation policy.
 
 ## Recommended production policy (not yet implemented)
 
@@ -166,17 +173,20 @@ control and treatment experiments remain reproducible.
 
 Recommended hardening:
 
-1. Add a total retrieval token/character budget, plus per-field truncation.
-2. Keep repository databases isolated by default; do not mix unrelated repos.
-3. Deduplicate or consolidate near-identical verified lessons by fixture, root
+1. Keep repository databases isolated by default; do not mix unrelated repos.
+2. Deduplicate or consolidate near-identical verified lessons by fixture, root
    cause, and changed paths.
-4. Add retention, archival, and explicit deletion/forgetting policy.
-5. Track retrieval usefulness: retrieved entry IDs, whether the Planner used
+3. Add retention, archival, and explicit deletion/forgetting policy.
+4. Track retrieval usefulness: retrieved entry IDs, whether the Planner used
    them, verified outcome, latency, tokens, and cost.
-6. Keep evaluator-only data, secrets, customer data, and full source out of the
+5. Keep evaluator-only data, secrets, customer data, and full source out of the
    store; add stronger redaction and access controls before multi-user use.
-7. Use a separate human-confirmed incident/rule store for severe but unresolved
+6. Use a separate human-confirmed incident/rule store for severe but unresolved
    findings. Do not mix them with verified repair lessons.
+
+These are Phase 7 or production concerns, not prerequisites for the first
+memory ablation. Repository-default activation and semantic retrieval would add
+new behavior and confounds before the lexical baseline has been measured.
 
 ## Why not inherit all short-term state between runs?
 
@@ -192,8 +202,16 @@ Memory usefulness must be measured, not assumed. RepoMedic includes a
 `compare-memory` command that only accepts paired benchmark runs with the same
 suite, ordered cases, model, reasoning effort, prompt version, and protocol.
 The baseline must have memory disabled; the treatment must have memory enabled
-and must actually retrieve provenance-bearing entries. The comparison derives
-verified-rate and usage deltas from saved artifacts.
+and must actually retrieve provenance-bearing entries. It also validates that
+all treatment cases used the benchmark's initial corpus fingerprint and that
+the recorded prompt payload stayed within its character budget. The comparison
+derives verified-rate and usage deltas from saved artifacts.
+
+The current 12 cases are a development dataset. A paired result on them measures
+development-set behavior only. A later generalization claim needs new holdout
+cases that were not used to create memory entries or tune retrieval. The memory
+seed manifest, corpus fingerprint, target cases, model, prompt, and review
+procedure should be frozen before either arm begins.
 
 Example:
 
@@ -208,8 +226,9 @@ repomedic compare-memory BASELINE_RUN MEMORY_RUN `
    explicitly opt in?
 2. What is the desired isolation boundary: repository, tenant, organization, or
    team? Who may read, export, or delete entries?
-3. What prompt token budget is acceptable for retrieved memory, and should
-   retrieval be progressive instead of injecting all details at planning time?
+3. Should the current 2400-character proxy become a model-token budget, and
+   should retrieval be progressive instead of injecting all details at planning
+   time?
 4. What merge, archival, retention, and deletion policy prevents unbounded
    growth while preserving auditability?
 5. Should the current lexical retrieval be replaced or supplemented with

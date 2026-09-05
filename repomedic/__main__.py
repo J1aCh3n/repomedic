@@ -9,7 +9,12 @@ from repomedic.agent_schemas import ApprovalDecision
 from repomedic.benchmark import load_suite
 from repomedic.benchmark_run import start_benchmark, summarize_benchmark
 from repomedic.harness import DeterministicHarness
-from repomedic.memory import EpisodicMemoryStore
+from repomedic.memory import (
+    DEFAULT_MEMORY_CONTEXT_BUDGET_CHARS,
+    EpisodicMemoryStore,
+    pack_memory_matches,
+    validate_memory_context_budget,
+)
 from repomedic.memory_ablation import compare_memory_ablation
 from repomedic.model_clients import OpenAIResponsesModel, ScriptedModel
 from repomedic.prompts import PROMPT_VERSION
@@ -40,6 +45,11 @@ def _parser() -> ArgumentParser:
     run_agent.add_argument("--docker-image", default=DEFAULT_DOCKER_IMAGE)
     run_agent.add_argument("--memory-db", type=Path)
     run_agent.add_argument("--memory-limit", type=int, default=3)
+    run_agent.add_argument(
+        "--memory-context-budget-chars",
+        type=int,
+        default=DEFAULT_MEMORY_CONTEXT_BUDGET_CHARS,
+    )
 
     decide = subparsers.add_parser(
         "decide-agent", help="approve, revise, or reject a paused Agent run"
@@ -86,6 +96,11 @@ def _parser() -> ArgumentParser:
     )
     start_benchmark_parser.add_argument("--memory-db", type=Path)
     start_benchmark_parser.add_argument("--memory-limit", type=int, default=3)
+    start_benchmark_parser.add_argument(
+        "--memory-context-budget-chars",
+        type=int,
+        default=DEFAULT_MEMORY_CONTEXT_BUDGET_CHARS,
+    )
 
     benchmark_status = subparsers.add_parser(
         "benchmark-status", help="aggregate a checkpointed benchmark run"
@@ -106,6 +121,11 @@ def _parser() -> ArgumentParser:
     memory_search.add_argument("--fixture")
     memory_search.add_argument("--exclude-case")
     memory_search.add_argument("--limit", type=int, default=3)
+    memory_search.add_argument(
+        "--context-budget-chars",
+        type=int,
+        default=DEFAULT_MEMORY_CONTEXT_BUDGET_CHARS,
+    )
 
     compare_memory = subparsers.add_parser(
         "compare-memory", help="compare complete no-memory and memory benchmark runs"
@@ -128,7 +148,7 @@ def _checkpoint_path(run_dir: Path) -> Path:
 
 def _configured_agent(
     run_dir: Path,
-) -> tuple[str, str | None, Path | None, int]:
+) -> tuple[str, str | None, Path | None, int, int]:
     config_path = run_dir.resolve() / "config.json"
     try:
         config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -165,13 +185,22 @@ def _configured_agent(
         or not 1 <= memory_limit <= 10
     ):
         raise ValueError(f"run has an invalid memory limit: {memory_limit!r}")
+    context_budget_chars = memory.get(
+        "context_budget_chars", DEFAULT_MEMORY_CONTEXT_BUDGET_CHARS
+    )
+    try:
+        validate_memory_context_budget(context_budget_chars)
+    except ValueError as error:
+        raise ValueError(
+            f"run has an invalid memory context budget: {context_budget_chars!r}"
+        ) from error
     memory_path: Path | None = None
     if memory.get("enabled") is True:
         database = memory.get("database")
         if not isinstance(database, str) or not database.strip():
             raise ValueError(f"run has no valid memory database: {config_path}")
         memory_path = Path(database)
-    return model, effort, memory_path, memory_limit
+    return model, effort, memory_path, memory_limit, context_budget_chars
 
 
 def _print_agent_result(result: AgentRunResult) -> None:
@@ -194,6 +223,7 @@ def _openai_runner(
     saver: SqliteSaver,
     memory_path: Path | None,
     memory_limit: int,
+    memory_context_budget_chars: int,
 ) -> AgentGraphRunner:
     return AgentGraphRunner(
         OpenAIResponsesModel(model, reasoning_effort=reasoning_effort),
@@ -201,6 +231,7 @@ def _openai_runner(
         saver,
         memory_store=EpisodicMemoryStore(memory_path) if memory_path else None,
         memory_limit=memory_limit,
+        memory_context_budget_chars=memory_context_budget_chars,
     )
 
 
@@ -234,6 +265,7 @@ def main() -> None:
                     else None
                 ),
                 memory_limit=args.memory_limit,
+                memory_context_budget_chars=args.memory_context_budget_chars,
             ).start(prepared)
         _print_agent_result(result)
         raise SystemExit(
@@ -241,7 +273,9 @@ def main() -> None:
         )
     if args.command == "decide-agent":
         database = _checkpoint_path(args.run_dir)
-        model, effort, memory_path, memory_limit = _configured_agent(args.run_dir)
+        model, effort, memory_path, memory_limit, memory_context_budget_chars = (
+            _configured_agent(args.run_dir)
+        )
         with SqliteSaver.from_conn_string(str(database)) as saver:
             runner = _openai_runner(
                 model=model,
@@ -250,6 +284,7 @@ def main() -> None:
                 saver=saver,
                 memory_path=memory_path,
                 memory_limit=memory_limit,
+                memory_context_budget_chars=memory_context_budget_chars,
             )
             result = runner.resume(
                 args.run_dir.resolve().name,
@@ -271,7 +306,9 @@ def main() -> None:
         if not 1 <= args.port <= 65535:
             raise ValueError("port must be between 1 and 65535")
         database = _checkpoint_path(args.run_dir)
-        model, effort, memory_path, memory_limit = _configured_agent(args.run_dir)
+        model, effort, memory_path, memory_limit, memory_context_budget_chars = (
+            _configured_agent(args.run_dir)
+        )
         with SqliteSaver.from_conn_string(str(database)) as saver:
             runner = _openai_runner(
                 model=model,
@@ -280,6 +317,7 @@ def main() -> None:
                 saver=saver,
                 memory_path=memory_path,
                 memory_limit=memory_limit,
+                memory_context_budget_chars=memory_context_budget_chars,
             )
             serve_control_panel(
                 runner, run_id=args.run_dir.resolve().name, port=args.port
@@ -306,6 +344,7 @@ def main() -> None:
                 else None
             ),
             memory_limit=args.memory_limit,
+            memory_context_budget_chars=args.memory_context_budget_chars,
         )
         print(f"run_dir={started.run_dir}")
         for result in started.case_results:
@@ -334,7 +373,12 @@ def main() -> None:
         )
         print(
             json.dumps(
-                [match.prompt_value() for match in matches],
+                list(
+                    pack_memory_matches(
+                        matches,
+                        context_budget_chars=args.context_budget_chars,
+                    )
+                ),
                 indent=2,
                 ensure_ascii=False,
             )

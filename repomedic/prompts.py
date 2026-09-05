@@ -1,4 +1,4 @@
-PROMPT_VERSION = "agent-graph-v3"
+PROMPT_VERSION = "agent-graph-v4"
 
 
 PLANNER_PROMPT = """You are the RepoMedic Planner. Turn the issue into a small,

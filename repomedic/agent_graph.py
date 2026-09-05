@@ -23,7 +23,13 @@ from repomedic.agent_tools import (
 from repomedic.artifacts import ArtifactWriter
 from repomedic.harness import DeterministicHarness, PreparedRun
 from repomedic.manifest import load_manifest
-from repomedic.memory import EpisodicMemoryStore
+from repomedic.memory import (
+    DEFAULT_MEMORY_CONTEXT_BUDGET_CHARS,
+    EpisodicMemoryStore,
+    memory_prompt_chars,
+    pack_memory_matches,
+    validate_memory_context_budget,
+)
 from repomedic.model_clients import (
     ModelClientError,
     ModelResult,
@@ -122,14 +128,17 @@ class AgentGraphRunner:
         checkpointer: Any,
         memory_store: EpisodicMemoryStore | None = None,
         memory_limit: int = 3,
+        memory_context_budget_chars: int = DEFAULT_MEMORY_CONTEXT_BUDGET_CHARS,
     ) -> None:
         if not 1 <= memory_limit <= 10:
             raise ValueError("memory limit must be between 1 and 10")
+        validate_memory_context_budget(memory_context_budget_chars)
         self.model = model
         self.harness = harness
         self.checkpointer = checkpointer
         self.memory_store = memory_store
         self.memory_limit = memory_limit
+        self.memory_context_budget_chars = memory_context_budget_chars
         self.graph = self._compile()
 
     def _compile(self) -> Any:
@@ -727,6 +736,7 @@ class AgentGraphRunner:
         return {}
 
     def start(self, prepared: PreparedRun) -> AgentRunResult:
+        corpus = self.memory_store.snapshot() if self.memory_store is not None else None
         matches = (
             self.memory_store.search(
                 prepared.manifest.issue,
@@ -737,11 +747,21 @@ class AgentGraphRunner:
             if self.memory_store is not None
             else ()
         )
-        lessons = [match.prompt_value() for match in matches]
+        lessons = list(
+            pack_memory_matches(
+                matches,
+                context_budget_chars=self.memory_context_budget_chars,
+            )
+        )
+        retrieved_entry_ids = [item["entry_id"] for item in lessons]
         memory_data: dict[str, Any] = {
             "enabled": self.memory_store is not None,
             "database": str(self.memory_store.path) if self.memory_store else None,
             "limit": self.memory_limit,
+            "context_budget_chars": self.memory_context_budget_chars,
+            "context_chars": memory_prompt_chars(lessons),
+            "corpus": asdict(corpus) if corpus is not None else None,
+            "matched_entry_ids": [match.entry.entry_id for match in matches],
             "retrieved": lessons,
             "write": None,
         }
@@ -789,7 +809,10 @@ class AgentGraphRunner:
             "enabled": self.memory_store is not None,
             "database": str(self.memory_store.path) if self.memory_store else None,
             "limit": self.memory_limit,
-            "retrieved_entry_ids": [match.entry.entry_id for match in matches],
+            "context_budget_chars": self.memory_context_budget_chars,
+            "context_chars": memory_prompt_chars(lessons),
+            "corpus": asdict(corpus) if corpus is not None else None,
+            "retrieved_entry_ids": retrieved_entry_ids,
         }
         writer = ArtifactWriter(prepared.layout.run_dir)
         writer.write_json("config.json", config_data)
@@ -798,9 +821,11 @@ class AgentGraphRunner:
             "memory_retrieved",
             {
                 "enabled": self.memory_store is not None,
+                "context_budget_chars": self.memory_context_budget_chars,
+                "context_chars": memory_prompt_chars(lessons),
                 "entries": [
-                    {"entry_id": match.entry.entry_id, "score": match.score}
-                    for match in matches
+                    {"entry_id": item["entry_id"], "score": item["score"]}
+                    for item in lessons
                 ],
             },
         )

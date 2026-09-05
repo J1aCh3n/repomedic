@@ -10,7 +10,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from repomedic.agent_graph import AgentGraphRunner
 from repomedic.agent_schemas import ApprovalDecision
 from repomedic.harness import DeterministicHarness
-from repomedic.memory import EpisodicMemoryStore
+from repomedic.memory import EpisodicMemoryStore, MemorySnapshot
 from repomedic.model_clients import ScriptedModel
 from repomedic.models import TestResult
 from tests.helpers import temporary_directory
@@ -162,6 +162,9 @@ class StubMemoryStore:
         self.searches.append({"issue": issue, **kwargs})
         return (StubMemoryMatch(),)
 
+    def snapshot(self):
+        return MemorySnapshot(entry_count=1, content_hash="snapshot-hash")
+
     def record_verified_run(self, run_dir: Path) -> StubMemoryEntry:
         self.writes.append(run_dir.resolve())
         return StubMemoryEntry()
@@ -219,6 +222,7 @@ class AgentGraphTests(unittest.TestCase):
                 InMemorySaver(),
                 memory_store=store,
                 memory_limit=2,
+                memory_context_budget_chars=1800,
             )
 
             paused = runner.start(prepared)
@@ -237,6 +241,12 @@ class AgentGraphTests(unittest.TestCase):
                 (Path(paused.run_dir) / "config.json").read_text(encoding="utf-8")
             )
             self.assertEqual(config["memory"]["retrieved_entry_ids"], ["prior-entry"])
+            self.assertEqual(config["memory"]["context_budget_chars"], 1800)
+            self.assertGreater(config["memory"]["context_chars"], 0)
+            self.assertEqual(config["memory"]["corpus"]["entry_count"], 1)
+            self.assertEqual(
+                config["memory"]["corpus"]["content_hash"], "snapshot-hash"
+            )
             self.assertIsNone((paused.memory or {})["write"])
 
             result = runner.resume(

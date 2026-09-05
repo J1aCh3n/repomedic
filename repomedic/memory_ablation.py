@@ -4,6 +4,7 @@ import json
 
 from repomedic.artifacts import ArtifactWriter
 from repomedic.benchmark_run import summarize_benchmark
+from repomedic.memory import memory_prompt_chars, validate_memory_context_budget
 from repomedic.workspace import resolve_within
 
 
@@ -51,6 +52,22 @@ def _memory_config(record: dict[str, Any], run_dir: Path) -> dict[str, Any]:
 def _retrieval_evidence(
     memory_run: Path, record: dict[str, Any]
 ) -> tuple[list[dict[str, Any]], int]:
+    memory_config = _memory_config(record, memory_run)
+    context_budget = memory_config.get("context_budget_chars")
+    try:
+        validate_memory_context_budget(context_budget)
+    except ValueError as error:
+        raise ValueError("memory treatment has an invalid context budget") from error
+    corpus = memory_config.get("corpus")
+    if (
+        not isinstance(corpus, dict)
+        or not isinstance(corpus.get("entry_count"), int)
+        or isinstance(corpus.get("entry_count"), bool)
+        or corpus["entry_count"] < 1
+        or not isinstance(corpus.get("content_hash"), str)
+        or len(corpus["content_hash"]) != 64
+    ):
+        raise ValueError("memory treatment has no valid corpus snapshot")
     evidence: list[dict[str, Any]] = []
     covered_cases = 0
     for row in record["case_runs"]:
@@ -67,6 +84,19 @@ def _retrieval_evidence(
         retrieved = artifact.get("retrieved")
         if not isinstance(retrieved, list):
             raise ValueError(f"memory evidence for {case_id} has no retrieval list")
+        if artifact.get("corpus") != corpus:
+            raise ValueError(
+                f"memory evidence for {case_id} uses a different corpus snapshot"
+            )
+        actual_context_chars = memory_prompt_chars(retrieved)
+        if (
+            artifact.get("context_budget_chars") != context_budget
+            or artifact.get("context_chars") != actual_context_chars
+            or actual_context_chars > context_budget
+        ):
+            raise ValueError(
+                f"memory evidence for {case_id} has invalid context budget accounting"
+            )
         if retrieved:
             covered_cases += 1
         for item in retrieved:
@@ -111,6 +141,9 @@ def _markdown(report: dict[str, Any]) -> str:
         f"- Model: `{report['model']}`",
         f"- Prompt: `{report['prompt_version']}`",
         f"- Cases: `{report['case_count']}`",
+        f"- Memory corpus entries: `{report['memory_evidence']['corpus']['entry_count']}`",
+        f"- Memory corpus hash: `{report['memory_evidence']['corpus']['content_hash']}`",
+        f"- Memory context budget: `{report['memory_evidence']['context_budget_chars']}` chars",
         f"- Memory-covered cases: `{report['memory_evidence']['covered_cases']}`",
         f"- Retrieved entries: `{report['memory_evidence']['retrieval_count']}`",
         "",
@@ -144,6 +177,8 @@ def compare_memory_ablation(
     memory_record = _load_record(memory_resolved)
     baseline_summary = summarize_benchmark(baseline_resolved)
     memory_summary = summarize_benchmark(memory_resolved)
+    baseline_memory = _memory_config(baseline_record, baseline_resolved)
+    treatment_memory = _memory_config(memory_record, memory_resolved)
 
     if not baseline_summary.get("complete") or not memory_summary.get("complete"):
         raise ValueError("both benchmark runs must be complete before comparison")
@@ -154,9 +189,9 @@ def compare_memory_ablation(
     memory_cases = _case_ids(memory_record, memory_resolved)
     if baseline_cases != memory_cases:
         raise ValueError("benchmark runs must contain the same ordered case IDs")
-    if _memory_config(baseline_record, baseline_resolved)["enabled"]:
+    if baseline_memory["enabled"]:
         raise ValueError("baseline benchmark must disable memory")
-    if not _memory_config(memory_record, memory_resolved)["enabled"]:
+    if not treatment_memory["enabled"]:
         raise ValueError("memory treatment benchmark must enable memory")
 
     retrievals, covered_cases = _retrieval_evidence(memory_resolved, memory_record)
@@ -205,6 +240,8 @@ def compare_memory_ablation(
             "usage": usage_delta,
         },
         "memory_evidence": {
+            "context_budget_chars": treatment_memory["context_budget_chars"],
+            "corpus": treatment_memory["corpus"],
             "covered_cases": covered_cases,
             "retrieval_count": len(retrievals),
             "retrievals": retrievals,

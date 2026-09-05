@@ -489,10 +489,13 @@ root-cause, repair-summary, changed-path, and evidence-path fields plus fixture,
 case, and run provenance. Evaluator source and test output are not stored.
 
 Memory retrieval is deterministic lexical ranking with a same-fixture bonus.
-The current case is excluded. At most `--memory-limit` lessons are supplied to
-the Planner as untrusted hypotheses; repository evidence must still be gathered
-for the current run. Python/LangGraph continues to own routing, budgets,
-approval, testing, and the write gate.
+The current case is excluded. At most `--memory-limit` lessons are considered,
+and only lessons that fit the total `--memory-context-budget-chars` budget are
+supplied to the Planner. Long lesson fields and path lists are bounded before
+packing. The default budget is 2400 characters. Lessons remain untrusted
+hypotheses; repository evidence must still be gathered for the current run.
+Python/LangGraph continues to own routing, budgets, approval, testing, and the
+write gate.
 
 Import a prior verified Agent run and inspect retrieval without calling a model:
 
@@ -500,7 +503,8 @@ Import a prior verified Agent run and inspect retrieval without calling a model:
 repomedic memory-learn runs/PREVIOUS_CASE/RUN_ID `
   --memory-db runs/memory/episodic.sqlite
 repomedic memory-search "boundary comparison failure" `
-  --memory-db runs/memory/episodic.sqlite --fixture order_service
+  --memory-db runs/memory/episodic.sqlite --fixture order_service `
+  --context-budget-chars 2400
 ```
 
 Enable memory for one run or benchmark with an explicit database:
@@ -508,18 +512,23 @@ Enable memory for one run or benchmark with an explicit database:
 ```powershell
 repomedic run-agent benchmarks/cases/order_service_002 `
   --model gpt-5.6-terra --reasoning-effort low `
-  --memory-db runs/memory/episodic.sqlite
+  --memory-db runs/memory/episodic.sqlite `
+  --memory-context-budget-chars 2400
 ```
 
-Every run writes `memory.json`, including retrieved entry provenance and the
-entry written after successful verification. The database path and retrieval
-IDs are frozen in `config.json`, so approval through either CLI or web UI uses
-the same memory configuration after restart. Runs created under an older prompt
-version are rejected on resume rather than silently changing behavior.
+Every run writes `memory.json`, including retrieved entry provenance, canonical
+compact-JSON character count, the budget, the initial memory-corpus entry count
+and content hash, and the entry written after successful verification. The
+database path, corpus identity, budget, and retrieval IDs are frozen in
+`config.json`, so approval through either CLI or web UI uses the same prompt
+payload after restart. Runs created under an older prompt version are rejected
+on resume rather than silently changing behavior.
 
-The memory uplift gate requires paired, complete benchmark runs. Seed the memory
-database only from prior development runs, then run the same suite once without
-memory and once with memory using identical model and reasoning settings:
+The memory uplift gate requires paired, complete benchmark runs. Seed and freeze
+the memory database from prior verified runs, then run the same suite once
+without memory and once with memory using identical model and reasoning
+settings. A comparison on the current 12 development cases is development-set
+evidence only; it does not establish holdout generalization:
 
 ```powershell
 repomedic start-benchmark benchmarks/suites/order_service_4.yaml `
@@ -541,7 +550,8 @@ repomedic compare-memory runs/benchmarks/order_service_4/no-memory `
 ```
 
 `compare-memory` refuses incomplete or unmatched runs, a baseline with memory
-enabled, a treatment with memory disabled, missing provenance, same-case memory,
-or a treatment that retrieved no entries. It derives verified-rate and usage
-deltas from saved artifacts. The infrastructure is implemented; no memory
-uplift is claimed until this paired live-model experiment is completed.
+enabled, a treatment with memory disabled, missing provenance, changed corpus
+snapshots, invalid context-budget accounting, same-case memory, or a treatment
+that retrieved no entries. It derives verified-rate and usage deltas from saved
+artifacts. The infrastructure is implemented; no memory uplift is claimed until
+this paired live-model experiment is completed.

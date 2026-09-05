@@ -110,6 +110,7 @@ class BenchmarkRunTests(unittest.TestCase):
                 run_id="benchmark_run",
                 memory_store=memory_store,
                 memory_limit=2,
+                memory_context_budget_chars=1800,
             )
             summary = summarize_benchmark(started.run_dir)
             benchmark = json.loads(
@@ -120,10 +121,12 @@ class BenchmarkRunTests(unittest.TestCase):
             self.assertEqual(summary["usage"]["model_calls"], 4)
             self.assertEqual(summary["cases"][0]["usage"]["calls"], 4)
             self.assertEqual(
-                benchmark["protocol_version"], "multi-agent-memory-v1"
+                benchmark["protocol_version"], "multi-agent-memory-v2"
             )
             self.assertTrue(benchmark["memory"]["enabled"])
             self.assertEqual(benchmark["memory"]["limit"], 2)
+            self.assertEqual(benchmark["memory"]["context_budget_chars"], 1800)
+            self.assertEqual(benchmark["memory"]["corpus"]["entry_count"], 0)
 
 
 if __name__ == "__main__":

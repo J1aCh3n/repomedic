@@ -20,6 +20,8 @@ class CliTests(unittest.TestCase):
                 "runs/memory.sqlite",
                 "--memory-limit",
                 "2",
+                "--memory-context-budget-chars",
+                "1800",
             ]
         )
 
@@ -29,6 +31,7 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(args.memory_db, Path("runs/memory.sqlite"))
         self.assertEqual(args.memory_limit, 2)
+        self.assertEqual(args.memory_context_budget_chars, 1800)
 
     def test_memory_commands_parse_explicit_database(self) -> None:
         learn = _parser().parse_args(
@@ -51,6 +54,8 @@ class CliTests(unittest.TestCase):
                 "order_service_001",
                 "--limit",
                 "2",
+                "--context-budget-chars",
+                "1800",
             ]
         )
 
@@ -59,6 +64,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(search.fixture, "order_service")
         self.assertEqual(search.exclude_case, "order_service_001")
         self.assertEqual(search.limit, 2)
+        self.assertEqual(search.context_budget_chars, 1800)
 
         compare = _parser().parse_args(
             [

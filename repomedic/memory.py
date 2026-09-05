@@ -1,4 +1,4 @@
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -52,16 +52,29 @@ class MemoryMatch:
                 "run_id": self.entry.run_id,
             },
             "lesson": {
-                "issue": self.entry.issue,
-                "root_cause": self.entry.root_cause,
-                "repair_summary": self.entry.repair_summary,
-                "changed_paths": list(self.entry.changed_paths),
-                "evidence_paths": list(self.entry.evidence_paths),
+                "issue": _prompt_text(self.entry.issue, 300),
+                "root_cause": _prompt_text(self.entry.root_cause, 300),
+                "repair_summary": _prompt_text(self.entry.repair_summary, 300),
+                "changed_paths": [
+                    _prompt_text(path, 120) for path in self.entry.changed_paths[:3]
+                ],
+                "evidence_paths": [
+                    _prompt_text(path, 120) for path in self.entry.evidence_paths[:3]
+                ],
             },
         }
 
 
+@dataclass(frozen=True)
+class MemorySnapshot:
+    entry_count: int
+    content_hash: str
+
+
 _SCHEMA_VERSION = 1
+DEFAULT_MEMORY_CONTEXT_BUDGET_CHARS = 2400
+MIN_MEMORY_CONTEXT_BUDGET_CHARS = 512
+MAX_MEMORY_CONTEXT_BUDGET_CHARS = 20000
 _TOKEN = re.compile(r"[A-Za-z0-9_]+")
 _STOP_WORDS = {
     "a",
@@ -84,6 +97,55 @@ _STOP_WORDS = {
     "to",
     "with",
 }
+
+
+def _prompt_text(value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    return value[: limit - 3].rstrip() + "..."
+
+
+def validate_memory_context_budget(value: int) -> None:
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or not MIN_MEMORY_CONTEXT_BUDGET_CHARS
+        <= value
+        <= MAX_MEMORY_CONTEXT_BUDGET_CHARS
+    ):
+        raise ValueError(
+            "memory context budget must be between "
+            f"{MIN_MEMORY_CONTEXT_BUDGET_CHARS} and "
+            f"{MAX_MEMORY_CONTEXT_BUDGET_CHARS} characters"
+        )
+
+
+def memory_prompt_chars(lessons: Sequence[dict[str, Any]]) -> int:
+    if not lessons:
+        return 0
+    return len(
+        json.dumps(
+            list(lessons),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
+
+
+def pack_memory_matches(
+    matches: Iterable[MemoryMatch],
+    *,
+    context_budget_chars: int = DEFAULT_MEMORY_CONTEXT_BUDGET_CHARS,
+) -> tuple[dict[str, Any], ...]:
+    """Build the ranked Planner payload without exceeding a deterministic budget."""
+    validate_memory_context_budget(context_budget_chars)
+    packed: list[dict[str, Any]] = []
+    for match in matches:
+        candidate = match.prompt_value()
+        if memory_prompt_chars((*packed, candidate)) <= context_budget_chars:
+            packed.append(candidate)
+    return tuple(packed)
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -376,3 +438,18 @@ class EpisodicMemoryStore:
     def count(self) -> int:
         with self._connection() as connection:
             return int(connection.execute("SELECT COUNT(*) FROM memory_entries").fetchone()[0])
+
+    def snapshot(self) -> MemorySnapshot:
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT entry_id, content_hash FROM memory_entries ORDER BY entry_id"
+            ).fetchall()
+        identity = [
+            {"entry_id": row["entry_id"], "content_hash": row["content_hash"]}
+            for row in rows
+        ]
+        canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+        return MemorySnapshot(
+            entry_count=len(identity),
+            content_hash=sha256(canonical.encode("utf-8")).hexdigest(),
+        )

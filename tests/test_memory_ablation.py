@@ -10,10 +10,10 @@ from tests.helpers import temporary_directory
 def _summary(*, verified: int, statuses: list[str]) -> dict:
     return {
         "suite_id": "family_suite",
-        "protocol_version": "multi-agent-memory-v1",
+        "protocol_version": "multi-agent-memory-v2",
         "model": "scripted",
         "reasoning_effort": None,
-        "prompt_version": "agent-graph-v3",
+        "prompt_version": "agent-graph-v4",
         "complete": True,
         "case_count": 2,
         "verified": verified,
@@ -36,8 +36,17 @@ def _summary(*, verified: int, statuses: list[str]) -> dict:
 
 def _write_benchmark(run_dir: Path, *, memory_enabled: bool) -> None:
     run_dir.mkdir()
+    corpus = (
+        {"entry_count": 2, "content_hash": "a" * 64}
+        if memory_enabled
+        else None
+    )
     record = {
-        "memory": {"enabled": memory_enabled},
+        "memory": {
+            "enabled": memory_enabled,
+            "context_budget_chars": 2400,
+            "corpus": corpus,
+        },
         "case_runs": [
             {
                 "case_id": "family_001",
@@ -73,7 +82,24 @@ def _write_benchmark(run_dir: Path, *, memory_enabled: bool) -> None:
             else []
         )
         (case_dir / "memory.json").write_text(
-            json.dumps({"retrieved": retrieved}), encoding="utf-8"
+            json.dumps(
+                {
+                    "retrieved": retrieved,
+                    "context_budget_chars": 2400,
+                    "context_chars": len(
+                        json.dumps(
+                            retrieved,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        )
+                    )
+                    if retrieved
+                    else 0,
+                    "corpus": corpus,
+                }
+            ),
+            encoding="utf-8",
         )
 
 
@@ -114,7 +140,10 @@ class MemoryAblationTests(unittest.TestCase):
             _write_benchmark(baseline, memory_enabled=False)
             _write_benchmark(treatment, memory_enabled=True)
             for artifact in treatment.glob("cases/*/*/memory.json"):
-                artifact.write_text('{"retrieved": []}', encoding="utf-8")
+                payload = json.loads(artifact.read_text(encoding="utf-8"))
+                payload["retrieved"] = []
+                payload["context_chars"] = 0
+                artifact.write_text(json.dumps(payload), encoding="utf-8")
 
             with patch(
                 "repomedic.memory_ablation.summarize_benchmark",
@@ -125,6 +154,35 @@ class MemoryAblationTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(ValueError, "retrieved no entries"):
                     compare_memory_ablation(baseline, treatment, root / "comparison")
+
+    def test_rejects_treatment_with_changed_corpus_or_invalid_budget_evidence(self) -> None:
+        for field, value, message in (
+            ("corpus", {"entry_count": 3, "content_hash": "b" * 64}, "corpus"),
+            ("context_chars", 2401, "context"),
+        ):
+            with self.subTest(field=field):
+                with temporary_directory() as temp_dir:
+                    root = Path(temp_dir)
+                    baseline = root / "baseline"
+                    treatment = root / "treatment"
+                    _write_benchmark(baseline, memory_enabled=False)
+                    _write_benchmark(treatment, memory_enabled=True)
+                    artifact = next(treatment.glob("cases/*/*/memory.json"))
+                    payload = json.loads(artifact.read_text(encoding="utf-8"))
+                    payload[field] = value
+                    artifact.write_text(json.dumps(payload), encoding="utf-8")
+
+                    with patch(
+                        "repomedic.memory_ablation.summarize_benchmark",
+                        side_effect=[
+                            _summary(verified=1, statuses=["verified", "tests_failed"]),
+                            _summary(verified=1, statuses=["verified", "tests_failed"]),
+                        ],
+                    ):
+                        with self.assertRaisesRegex(ValueError, message):
+                            compare_memory_ablation(
+                                baseline, treatment, root / "comparison"
+                            )
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -11,13 +11,16 @@ from repomedic.agent_graph import AgentGraphRunner, AgentRunResult
 from repomedic.artifacts import ArtifactWriter
 from repomedic.benchmark import BenchmarkSuite
 from repomedic.harness import DeterministicHarness
-from repomedic.memory import EpisodicMemoryStore
+from repomedic.memory import (
+    DEFAULT_MEMORY_CONTEXT_BUDGET_CHARS,
+    EpisodicMemoryStore,
+)
 from repomedic.model_clients import ScriptedModel, StructuredModel
 from repomedic.prompts import PROMPT_VERSION
 from repomedic.workspace import resolve_within
 
 
-BENCHMARK_PROTOCOL_VERSION = "multi-agent-memory-v1"
+BENCHMARK_PROTOCOL_VERSION = "multi-agent-memory-v2"
 _TERMINAL_STATUSES = {
     "verified",
     "tests_failed",
@@ -57,6 +60,7 @@ def start_benchmark(
     run_id: str | None = None,
     memory_store: EpisodicMemoryStore | None = None,
     memory_limit: int = 3,
+    memory_context_budget_chars: int = DEFAULT_MEMORY_CONTEXT_BUDGET_CHARS,
 ) -> BenchmarkStartResult:
     root = runs_root.resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -67,6 +71,7 @@ def start_benchmark(
     run_dir.mkdir(exist_ok=False)
     cases_root = resolve_within(run_dir, "cases")
     cases_root.mkdir()
+    corpus = memory_store.snapshot() if memory_store is not None else None
     record: dict[str, Any] = {
         "suite_id": suite.suite_id,
         "suite_path": str(suite.suite_path),
@@ -79,6 +84,8 @@ def start_benchmark(
             "enabled": memory_store is not None,
             "database": str(memory_store.path) if memory_store else None,
             "limit": memory_limit,
+            "context_budget_chars": memory_context_budget_chars,
+            "corpus": asdict(corpus) if corpus is not None else None,
         },
         "case_runs": [],
     }
@@ -95,6 +102,7 @@ def start_benchmark(
                 saver,
                 memory_store=memory_store,
                 memory_limit=memory_limit,
+                memory_context_budget_chars=memory_context_budget_chars,
             ).start(prepared)
         results.append(result)
         record["case_runs"].append(

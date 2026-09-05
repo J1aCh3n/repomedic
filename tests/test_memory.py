@@ -3,7 +3,12 @@ import json
 import unittest
 
 from repomedic.artifacts import ArtifactWriter
-from repomedic.memory import EpisodicMemoryStore, MemoryEvidenceError
+from repomedic.memory import (
+    EpisodicMemoryStore,
+    MemoryEvidenceError,
+    memory_prompt_chars,
+    pack_memory_matches,
+)
 from tests.helpers import temporary_directory
 
 
@@ -165,6 +170,54 @@ class EpisodicMemoryStoreTests(unittest.TestCase):
             prompt = matches[0].prompt_value()
             self.assertEqual(prompt["provenance"]["run_id"], "attempt_1")
             self.assertNotIn("HIDDEN_SENTINEL", json.dumps(prompt))
+
+    def test_snapshot_identifies_logical_corpus_content(self) -> None:
+        with temporary_directory() as temp_dir:
+            root = Path(temp_dir)
+            store = EpisodicMemoryStore(root / "memory.sqlite")
+            empty = store.snapshot()
+            run_dir = _verified_run(
+                root,
+                case_id="document_001",
+                fixture_id="document",
+                issue="Normalize whitespace in a document.",
+                root_cause="Literal splitting ignores tabs.",
+            )
+
+            store.record_verified_run(run_dir)
+            populated = store.snapshot()
+
+            self.assertEqual(empty.entry_count, 0)
+            self.assertEqual(populated.entry_count, 1)
+            self.assertNotEqual(empty.content_hash, populated.content_hash)
+            self.assertEqual(populated, store.snapshot())
+
+    def test_prompt_packing_enforces_total_and_per_field_limits(self) -> None:
+        with temporary_directory() as temp_dir:
+            root = Path(temp_dir)
+            store = EpisodicMemoryStore(root / "memory.sqlite")
+            run_dir = _verified_run(
+                root,
+                case_id="document_001",
+                fixture_id="document",
+                issue="Normalize " + "very verbose whitespace details " * 100,
+                root_cause="Literal splitting " + "misses separators " * 100,
+            )
+            store.record_verified_run(run_dir)
+            matches = store.search(
+                "normalize whitespace",
+                fixture_id="document",
+                exclude_case_id="document_999",
+            )
+
+            packed = pack_memory_matches(matches, context_budget_chars=1200)
+
+            self.assertTrue(packed)
+            self.assertLessEqual(memory_prompt_chars(packed), 1200)
+            self.assertLessEqual(len(packed[0]["lesson"]["issue"]), 300)
+            self.assertTrue(packed[0]["lesson"]["issue"].endswith("..."))
+            with self.assertRaisesRegex(ValueError, "between 512 and 20000"):
+                pack_memory_matches(matches, context_budget_chars=511)
 
 
 if __name__ == "__main__":
