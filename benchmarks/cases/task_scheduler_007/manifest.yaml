@@ -1,0 +1,38 @@
+case_id: task_scheduler_007
+category: edge_case_regression_bug
+fixture:
+  id: task_scheduler
+  version: task_scheduler-v1
+issue: >-
+  Rejected scheduling requests are consuming task IDs before validation
+  finishes. Make every failed request leave the next ID unchanged, including
+  empty-title, past-time, invalid-duration, and conflict failures, while
+  preserving sequential IDs for successfully saved tasks.
+runnable_entry_point:
+  argv: [python, -m, task_scheduler.cli]
+  cwd: repo
+tests:
+  public:
+    argv: [python, -m, unittest, discover, -s, tests, -v]
+    cwd: repo
+  evaluator:
+    argv: [python, -m, unittest, discover, -s, hidden_tests, -v]
+    cwd: evaluator
+paths:
+  allowed:
+    - task_scheduler/scheduler.py
+    - task_scheduler/storage.py
+  forbidden:
+    - .git
+    - .env
+    - tests
+    - evaluator
+limits:
+  wall_time_seconds: 60
+  tool_calls: 22
+  repair_iterations: 2
+expected_behavior:
+  - A rejected request does not advance the task ID sequence.
+  - The first successfully saved task receives `task-1`.
+  - Later successfully saved tasks receive sequential `task-N` IDs.
+  - Existing validation and conflict behavior remains unchanged.

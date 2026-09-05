@@ -1,0 +1,21 @@
+diff --git a/task_scheduler/scheduler.py b/task_scheduler/scheduler.py
+--- a/task_scheduler/scheduler.py
++++ b/task_scheduler/scheduler.py
+@@ -17,15 +17,14 @@ class Scheduler:
+         *,
+         now: datetime,
+     ) -> Task:
+-        task_id = self._store.next_task_id()
+         if not title.strip():
+             raise ValueError("title must not be empty")
+         if duration_minutes <= 0:
+             raise ValueError("duration must be positive")
+         ensure_future(starts_at, now)
+         ensure_no_conflict(starts_at, duration_minutes, self._store.all())
+ 
+         task = Task(
+-            task_id=task_id,
++            task_id=self._store.next_task_id(),
+             title=title.strip(),
+             starts_at=starts_at,
+             duration_minutes=duration_minutes,
