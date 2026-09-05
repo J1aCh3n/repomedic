@@ -1,0 +1,35 @@
+case_id: task_scheduler_005
+category: local_logic_bug
+fixture:
+  id: task_scheduler
+  version: task_scheduler-v1
+issue: >-
+  Back-to-back tasks are incorrectly rejected as overlapping when one starts
+  exactly as another ends. Allow adjacent tasks in either order while still
+  rejecting intervals that overlap by any positive amount.
+runnable_entry_point:
+  argv: [python, -m, task_scheduler.cli]
+  cwd: repo
+tests:
+  public:
+    argv: [python, -m, unittest, discover, -s, tests, -v]
+    cwd: repo
+  evaluator:
+    argv: [python, -m, unittest, discover, -s, hidden_tests, -v]
+    cwd: evaluator
+paths:
+  allowed:
+    - task_scheduler/policies.py
+  forbidden:
+    - .git
+    - .env
+    - tests
+    - evaluator
+limits:
+  wall_time_seconds: 60
+  tool_calls: 20
+  repair_iterations: 2
+expected_behavior:
+  - A task may start at the exact instant another task ends.
+  - A task may end at the exact instant another task starts.
+  - Intervals that overlap by a positive duration are rejected.
