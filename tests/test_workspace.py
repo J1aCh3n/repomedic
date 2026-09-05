@@ -50,6 +50,20 @@ class WorkspaceTests(unittest.TestCase):
                 with self.assertRaisesRegex(PathSafetyError, "symlink"):
                     reset_workspace(source, layout)
 
+    def test_reset_rejects_a_link_at_the_source_root(self) -> None:
+        with temporary_directory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source"
+            source.mkdir()
+            layout = RunLayout.create(root / "runs", "case_001", "run_001")
+
+            with patch(
+                "repomedic.workspace.is_link_or_junction",
+                side_effect=lambda path: path == source,
+            ):
+                with self.assertRaisesRegex(PathSafetyError, "symlink"):
+                    reset_workspace(source, layout)
+
 
 if __name__ == "__main__":
     unittest.main()

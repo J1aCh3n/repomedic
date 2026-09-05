@@ -164,6 +164,15 @@ def _required_text(value: Any, field: str) -> str:
     return redact_text(value.strip())
 
 
+def _content_hash(values: dict[str, Any]) -> str:
+    canonical = json.dumps(values, sort_keys=True, separators=(",", ":"))
+    return sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _entry_id(case_id: str, run_id: str) -> str:
+    return sha256(f"{case_id}\0{run_id}".encode("utf-8")).hexdigest()[:24]
+
+
 def _review_summary(review: dict[str, Any]) -> str:
     feedback = review.get("feedback")
     if isinstance(feedback, str) and feedback.strip():
@@ -284,13 +293,10 @@ def _entry_from_run(run_dir: Path) -> MemoryEntry:
         "changed_paths": changed_paths,
         "evidence_paths": evidence_paths,
     }
-    canonical = json.dumps(values, sort_keys=True, separators=(",", ":"))
-    content_hash = sha256(canonical.encode("utf-8")).hexdigest()
-    identity = f"{values['case_id']}\0{values['run_id']}"
     return MemoryEntry(
-        entry_id=sha256(identity.encode("utf-8")).hexdigest()[:24],
+        entry_id=_entry_id(values["case_id"], values["run_id"]),
         created_at=datetime.now(UTC).isoformat(),
-        content_hash=content_hash,
+        content_hash=_content_hash(values),
         **values,
     )
 
@@ -355,19 +361,45 @@ class EpisodicMemoryStore:
 
     @staticmethod
     def _row_to_entry(row: sqlite3.Row) -> MemoryEntry:
+        def text(field: str) -> str:
+            value = row[field]
+            if not isinstance(value, str) or not value:
+                raise MemoryIntegrityError(f"memory {field} is not valid text")
+            return value
+
+        def paths(field: str) -> tuple[str, ...]:
+            try:
+                value = json.loads(text(field))
+            except json.JSONDecodeError as error:
+                raise MemoryIntegrityError(f"memory {field} is not valid JSON") from error
+            if not isinstance(value, list) or any(
+                not isinstance(item, str) or not item for item in value
+            ):
+                raise MemoryIntegrityError(f"memory {field} is not a string list")
+            return tuple(value)
+
+        values = {
+            "fixture_id": text("fixture_id"),
+            "fixture_version": text("fixture_version"),
+            "case_id": text("case_id"),
+            "run_id": text("run_id"),
+            "issue": text("issue"),
+            "root_cause": text("root_cause"),
+            "repair_summary": text("repair_summary"),
+            "changed_paths": paths("changed_paths_json"),
+            "evidence_paths": paths("evidence_paths_json"),
+        }
+        stored_hash = text("content_hash")
+        if stored_hash != _content_hash(values):
+            raise MemoryIntegrityError("memory content hash does not match its fields")
+        stored_entry_id = text("entry_id")
+        if stored_entry_id != _entry_id(values["case_id"], values["run_id"]):
+            raise MemoryIntegrityError("memory entry id does not match its provenance")
         return MemoryEntry(
-            entry_id=row["entry_id"],
-            fixture_id=row["fixture_id"],
-            fixture_version=row["fixture_version"],
-            case_id=row["case_id"],
-            run_id=row["run_id"],
-            issue=row["issue"],
-            root_cause=row["root_cause"],
-            repair_summary=row["repair_summary"],
-            changed_paths=tuple(json.loads(row["changed_paths_json"])),
-            evidence_paths=tuple(json.loads(row["evidence_paths_json"])),
-            created_at=row["created_at"],
-            content_hash=row["content_hash"],
+            entry_id=stored_entry_id,
+            created_at=text("created_at"),
+            content_hash=stored_hash,
+            **values,
         )
 
     def record_verified_run(self, run_dir: Path) -> MemoryEntry:
@@ -442,11 +474,12 @@ class EpisodicMemoryStore:
     def snapshot(self) -> MemorySnapshot:
         with self._connection() as connection:
             rows = connection.execute(
-                "SELECT entry_id, content_hash FROM memory_entries ORDER BY entry_id"
+                "SELECT * FROM memory_entries ORDER BY entry_id"
             ).fetchall()
+        entries = [self._row_to_entry(row) for row in rows]
         identity = [
-            {"entry_id": row["entry_id"], "content_hash": row["content_hash"]}
-            for row in rows
+            {"entry_id": entry.entry_id, "content_hash": entry.content_hash}
+            for entry in entries
         ]
         canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
         return MemorySnapshot(

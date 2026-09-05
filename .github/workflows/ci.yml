@@ -37,6 +37,9 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
+      - name: Upgrade packaging tools
+        run: python -m pip install --upgrade pip==26.2.1 setuptools==84.0.0
+
       - name: Install RepoMedic
         run: python -m pip install -e .
 
@@ -71,8 +74,39 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      - name: Upgrade packaging tools
+        run: python -m pip install --upgrade pip==26.2.1 setuptools==84.0.0
+
       - name: Install build frontend
         run: python -m pip install build==1.6.0
 
       - name: Build wheel and source distribution
         run: python -m build
+
+  dependency-audit:
+    name: Audit Python dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      OPENAI_API_KEY: ""
+      REPOMEDIC_OPENAI_API_KEY: ""
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Upgrade packaging tools
+        run: python -m pip install --upgrade pip==26.2.1 setuptools==84.0.0
+
+      - name: Install RepoMedic and audit tool
+        run: python -m pip install -e . pip-audit==2.10.1
+
+      - name: Check installed dependencies for known vulnerabilities
+        run: python -m pip_audit --local --skip-editable

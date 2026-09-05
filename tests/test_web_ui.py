@@ -1,7 +1,7 @@
 import unittest
 
 from repomedic.agent_graph import AgentRunResult
-from repomedic.web_ui import render_control_panel
+from repomedic.web_ui import render_control_panel, render_error_page
 
 
 class WebUiTests(unittest.TestCase):
@@ -40,6 +40,16 @@ class WebUiTests(unittest.TestCase):
 
         self.assertIn("verified", page)
         self.assertNotIn("Approve and continue", page)
+
+    def test_error_page_redacts_and_escapes_exception_text(self) -> None:
+        page = render_error_page(
+            RuntimeError("OPENAI_API_KEY=plain-secret <script>alert(1)</script>")
+        )
+
+        self.assertNotIn("plain-secret", page)
+        self.assertNotIn("<script>", page)
+        self.assertIn("[REDACTED]", page)
+        self.assertIn("&lt;script&gt;", page)
 
 
 if __name__ == "__main__":

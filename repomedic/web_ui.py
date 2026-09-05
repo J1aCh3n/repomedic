@@ -7,6 +7,12 @@ import secrets
 
 from repomedic.agent_graph import AgentGraphRunner, AgentRunResult
 from repomedic.agent_schemas import ApprovalDecision
+from repomedic.artifacts import redact_text
+
+
+def render_error_page(error: Exception) -> str:
+    message = escape(redact_text(str(error)))
+    return f"<h1>Run failed</h1><pre>{message}</pre>"
 
 
 def render_control_panel(result: AgentRunResult, *, csrf_token: str) -> str:
@@ -85,6 +91,13 @@ def serve_control_panel(
             self.send_header("Content-Length", str(len(encoded)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'none'; style-src 'unsafe-inline'; "
+                "form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+            )
             self.end_headers()
             self.wfile.write(encoded)
 
@@ -106,11 +119,20 @@ def serve_control_panel(
             except ValueError:
                 self._send(400, "Invalid request")
                 return
+            if length < 0:
+                self._send(400, "Invalid request")
+                return
             if length > 16_000:
                 self._send(413, "Request too large")
                 return
-            fields = parse_qs(self.rfile.read(length).decode("utf-8"))
-            if fields.get("csrf", [""])[0] != csrf_token:
+            try:
+                fields = parse_qs(
+                    self.rfile.read(length).decode("utf-8"), max_num_fields=10
+                )
+            except (UnicodeDecodeError, ValueError):
+                self._send(400, "Invalid request")
+                return
+            if not secrets.compare_digest(fields.get("csrf", [""])[0], csrf_token):
                 self._send(403, "Invalid CSRF token")
                 return
             try:
@@ -120,7 +142,7 @@ def serve_control_panel(
                 )
                 result = runner.resume(run_id, decision)
             except Exception as error:
-                self._send(500, f"<h1>Run failed</h1><pre>{escape(str(error))}</pre>")
+                self._send(500, render_error_page(error))
                 return
             if on_result:
                 on_result(result)

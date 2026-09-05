@@ -47,7 +47,9 @@ RepoMedic is designed around these boundaries:
 - Public benchmark evaluator tests and reference patches are reproducibility
   material, not confidential holdouts.
 - Dependency and container-image vulnerabilities can change after release;
-  users must apply their own update and scanning policy.
+  Dependabot and the CI `pip-audit` job provide current signals but cannot prove
+  the absence of vulnerabilities. Users must apply their own update and
+  scanning policy.
 
 Do not place secrets, customer data, proprietary source, or private holdout
 material in a RepoMedic run unless the surrounding environment supplies the

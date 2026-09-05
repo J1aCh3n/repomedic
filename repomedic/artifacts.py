@@ -8,14 +8,30 @@ from repomedic.workspace import resolve_within
 
 
 _ASSIGNMENT_SECRET = re.compile(
-    r"(?i)\b(api[_-]?key|token|secret|password|authorization)\b(\s*[:=]\s*)([^\s,;]+)"
+    r"(?i)"
+    r"(?P<label>\b(?:[a-z0-9]+[_-])*(?:api[_-]?key|token|secret|password|authorization)\b)"
+    r"(?P<separator>[\"']?\s*[:=]\s*)"
+    r"(?P<quote>[\"']?)"
+    r"(?P<value>[^\s,;}\"']+)"
+    r"(?P=quote)"
 )
 _BEARER_SECRET = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
-_PROVIDER_TOKEN = re.compile(r"\b(?:sk|gh[pousr])_[A-Za-z0-9_-]{20,}\b")
+_PROVIDER_TOKEN = re.compile(
+    r"\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_-]{20,})\b"
+)
+_SENSITIVE_KEY = re.compile(
+    r"(?i)(?:^|[_-])(?:api[_-]?key|token|secret|password|authorization)$"
+)
 
 
 def redact_text(text: str) -> str:
-    redacted = _ASSIGNMENT_SECRET.sub(r"\1\2[REDACTED]", text)
+    redacted = _ASSIGNMENT_SECRET.sub(
+        lambda match: (
+            f"{match.group('label')}{match.group('separator')}"
+            f"{match.group('quote')}[REDACTED]{match.group('quote')}"
+        ),
+        text,
+    )
     redacted = _BEARER_SECRET.sub("Bearer [REDACTED]", redacted)
     return _PROVIDER_TOKEN.sub("[REDACTED]", redacted)
 
@@ -24,7 +40,13 @@ def _sanitize(value: Any) -> Any:
     if isinstance(value, str):
         return redact_text(value)
     if isinstance(value, dict):
-        return {str(key): _sanitize(item) for key, item in value.items()}
+        sanitized: dict[str, Any] = {}
+        for key, item in value.items():
+            text_key = str(key)
+            sanitized[text_key] = (
+                "[REDACTED]" if _SENSITIVE_KEY.search(text_key) else _sanitize(item)
+            )
+        return sanitized
     if isinstance(value, (list, tuple)):
         return [_sanitize(item) for item in value]
     return value
@@ -59,4 +81,3 @@ class ArtifactWriter:
         )
         with path.open("a", encoding="utf-8", newline="\n") as stream:
             stream.write(f"{record}\n")
-

@@ -106,9 +106,11 @@ class RunLayout:
 
 
 def reset_workspace(source: Path, layout: RunLayout) -> None:
+    if not source.is_dir():
+        raise PathSafetyError(f"source repository does not exist: {source}")
+    if is_link_or_junction(source):
+        raise PathSafetyError(f"source repository may not be a symlink or junction: {source}")
     resolved_source = source.resolve()
-    if not resolved_source.is_dir():
-        raise PathSafetyError(f"source repository does not exist: {resolved_source}")
     if layout.workspace.exists():
         _remove_tree_inside(layout.run_dir, layout.workspace)
     _copy_source_tree(resolved_source, resolved_source, layout.workspace)

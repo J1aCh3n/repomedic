@@ -4,6 +4,7 @@ import subprocess
 import time
 
 from repomedic.models import CommandSpec, TestResult
+from repomedic.workspace import is_link_or_junction
 
 
 class SandboxError(ValueError):
@@ -23,11 +24,22 @@ class DockerSandbox:
         image: str = DEFAULT_DOCKER_IMAGE,
         docker_executable: str = "docker",
     ) -> None:
+        if (
+            not image
+            or image.startswith("-")
+            or len(image) > 512
+            or any(character.isspace() or character == "\x00" for character in image)
+        ):
+            raise SandboxError("unsafe Docker image reference")
         self.image = image
         self.docker_executable = docker_executable
 
     @staticmethod
     def _mount(source: Path, target: str, *, readonly: bool) -> str:
+        if not source.is_dir():
+            raise SandboxError(f"Docker bind source is not a directory: {source}")
+        if is_link_or_junction(source):
+            raise SandboxError(f"Docker bind source may not be a link: {source}")
         resolved = str(source.resolve())
         if "," in resolved:
             raise SandboxError("Docker bind source paths may not contain commas")

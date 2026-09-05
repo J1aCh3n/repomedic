@@ -10,7 +10,9 @@ RepoMedic is a proposed LangGraph-based multi-agent coding system that turns a s
 
 This is an experimental learning project, not a production repair service. See
 [`CONTRIBUTING.md`](CONTRIBUTING.md) before proposing changes and
-[`SECURITY.md`](SECURITY.md) for the security model and reporting process.
+[`SECURITY.md`](SECURITY.md) for the security model and reporting process. The
+latest manual review and residual risks are documented in
+[`docs/security-review.md`](docs/security-review.md).
 Default CI runs on Windows and Linux with Python 3.11 and 3.12. It uses no API
 credentials and never starts a live-model benchmark.
 

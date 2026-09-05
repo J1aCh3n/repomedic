@@ -4,11 +4,33 @@ import unittest
 from unittest.mock import patch
 
 from repomedic.models import CommandSpec
-from repomedic.sandbox import DockerSandbox
+from repomedic.sandbox import DockerSandbox, SandboxError
 from tests.helpers import temporary_directory
 
 
 class DockerSandboxTests(unittest.TestCase):
+    def test_rejects_an_image_name_that_docker_would_parse_as_an_option(self) -> None:
+        with self.assertRaisesRegex(SandboxError, "image"):
+            DockerSandbox(image="--privileged")
+
+    @patch("repomedic.sandbox.is_link_or_junction", return_value=True)
+    def test_rejects_a_link_as_a_bind_mount_source(self, _link_mock) -> None:
+        with temporary_directory() as temp_dir:
+            workspace = Path(temp_dir) / "workspace"
+            workspace.mkdir()
+
+            with self.assertRaisesRegex(SandboxError, "link"):
+                DockerSandbox().build_command(
+                    container_name="repomedic-case-run-public",
+                    workspace=workspace,
+                    evaluator_dir=None,
+                    spec=CommandSpec(
+                        argv=("python", "-m", "unittest"),
+                        cwd="repo",
+                    ),
+                    kind="public",
+                )
+
     def test_public_command_has_required_isolation_flags(self) -> None:
         with temporary_directory() as temp_dir:
             workspace = Path(temp_dir) / "workspace"
