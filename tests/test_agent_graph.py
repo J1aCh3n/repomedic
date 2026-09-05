@@ -1,6 +1,7 @@
 from collections import deque
 from dataclasses import replace
 from pathlib import Path
+import json
 import unittest
 
 from langgraph.checkpoint.memory import InMemorySaver
@@ -9,6 +10,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from repomedic.agent_graph import AgentGraphRunner
 from repomedic.agent_schemas import ApprovalDecision
 from repomedic.harness import DeterministicHarness
+from repomedic.memory import EpisodicMemoryStore
 from repomedic.model_clients import ScriptedModel
 from repomedic.models import TestResult
 from tests.helpers import temporary_directory
@@ -110,6 +112,61 @@ class SequenceSandbox:
         )
 
 
+class CapturingScriptedModel(ScriptedModel):
+    def __init__(self, responses: dict) -> None:
+        super().__init__(responses)
+        self.inputs: list[tuple[str, dict]] = []
+
+    def generate(self, **kwargs):
+        self.inputs.append((kwargs["agent"], kwargs["input_data"]))
+        return super().generate(**kwargs)
+
+
+class StubMemoryEntry:
+    entry_id = "prior-entry"
+    case_id = "order_service_prior"
+    run_id = "prior-run"
+
+
+class StubMemoryMatch:
+    entry = StubMemoryEntry()
+    score = 7
+
+    def prompt_value(self) -> dict:
+        return {
+            "entry_id": self.entry.entry_id,
+            "score": self.score,
+            "provenance": {
+                "fixture_id": "order_service",
+                "fixture_version": "order-service-v1",
+                "case_id": self.entry.case_id,
+                "run_id": self.entry.run_id,
+            },
+            "lesson": {
+                "issue": "A prior threshold bug.",
+                "root_cause": "A strict comparison excluded the boundary.",
+                "repair_summary": "Use an inclusive comparison.",
+                "changed_paths": ["order_service/pricing.py"],
+                "evidence_paths": ["order_service/pricing.py"],
+            },
+        }
+
+
+class StubMemoryStore:
+    def __init__(self, path: Path) -> None:
+        self.path = path.resolve()
+        self.searches: list[dict] = []
+        self.writes: list[Path] = []
+
+    def search(self, issue: str, **kwargs) -> tuple[StubMemoryMatch, ...]:
+        self.searches.append({"issue": issue, **kwargs})
+        return (StubMemoryMatch(),)
+
+    def record_verified_run(self, run_dir: Path) -> StubMemoryEntry:
+        self.writes.append(run_dir.resolve())
+        return StubMemoryEntry()
+
+
 class AgentGraphTests(unittest.TestCase):
     def _start(self, temp_dir: str, model: ScriptedModel, sandbox: SequenceSandbox):
         harness = DeterministicHarness(sandbox=sandbox)
@@ -135,6 +192,8 @@ class AgentGraphTests(unittest.TestCase):
 
             self.assertEqual(result.status, "verified")
             self.assertFalse(result.awaiting_approval)
+            config = json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
+            self.assertFalse(config["memory"]["enabled"])
             for name in (
                 "plan.json",
                 "investigation.json",
@@ -144,6 +203,84 @@ class AgentGraphTests(unittest.TestCase):
                 "final-report.md",
             ):
                 self.assertTrue((run_dir / name).is_file(), name)
+
+    def test_memory_retrieval_reaches_planner_and_verified_run_is_recorded(self) -> None:
+        with temporary_directory() as temp_dir:
+            sandbox = SequenceSandbox([True, True])
+            harness = DeterministicHarness(sandbox=sandbox)
+            prepared = harness.prepare_case(
+                CASE_ROOT, Path(temp_dir), run_id="memory_run"
+            )
+            model = CapturingScriptedModel(script(reviews=["pass"]))
+            store = StubMemoryStore(Path(temp_dir) / "memory.sqlite")
+            runner = AgentGraphRunner(
+                model,
+                harness,
+                InMemorySaver(),
+                memory_store=store,
+                memory_limit=2,
+            )
+
+            paused = runner.start(prepared)
+
+            planner_input = next(
+                input_data
+                for agent, input_data in model.inputs
+                if agent == "planner"
+            )
+            self.assertEqual(
+                planner_input["memory_lessons"], [StubMemoryMatch().prompt_value()]
+            )
+            self.assertEqual(store.searches[0]["exclude_case_id"], "order_service_001")
+            self.assertEqual(store.searches[0]["limit"], 2)
+            config = json.loads(
+                (Path(paused.run_dir) / "config.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(config["memory"]["retrieved_entry_ids"], ["prior-entry"])
+            self.assertIsNone((paused.memory or {})["write"])
+
+            result = runner.resume(
+                "memory_run", ApprovalDecision(action="approve", feedback="")
+            )
+
+            self.assertEqual(result.status, "verified")
+            self.assertEqual(store.writes, [Path(result.run_dir).resolve()])
+            self.assertEqual((result.memory or {})["write"]["entry_id"], "prior-entry")
+            artifact = json.loads(
+                (Path(result.run_dir) / "memory.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(artifact["write"]["status"], "stored")
+
+    def test_verified_graph_run_writes_real_memory_entry(self) -> None:
+        with temporary_directory() as temp_dir:
+            sandbox = SequenceSandbox([True, True])
+            harness = DeterministicHarness(sandbox=sandbox)
+            prepared = harness.prepare_case(
+                CASE_ROOT, Path(temp_dir), run_id="real_memory_run"
+            )
+            store = EpisodicMemoryStore(Path(temp_dir) / "memory.sqlite")
+            runner = AgentGraphRunner(
+                ScriptedModel(script(reviews=["pass"])),
+                harness,
+                InMemorySaver(),
+                memory_store=store,
+            )
+
+            runner.start(prepared)
+            result = runner.resume(
+                "real_memory_run", ApprovalDecision(action="approve", feedback="")
+            )
+
+            self.assertEqual(result.status, "verified")
+            self.assertEqual(store.count(), 1)
+            match = store.search(
+                "bulk threshold discount",
+                fixture_id="order_service",
+                exclude_case_id="another_case",
+                limit=1,
+            )[0]
+            self.assertEqual(match.entry.case_id, "order_service_001")
+            self.assertEqual(match.entry.run_id, "real_memory_run")
 
     def test_revision_and_replan_routes_return_to_expected_agent(self) -> None:
         for first_verdict, expected_agent in (("revise", "coder"), ("replan", "planner")):

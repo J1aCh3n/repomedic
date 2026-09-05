@@ -102,6 +102,22 @@ def _required_text(value: Any, field: str) -> str:
     return redact_text(value.strip())
 
 
+def _review_summary(review: dict[str, Any]) -> str:
+    feedback = review.get("feedback")
+    if isinstance(feedback, str) and feedback.strip():
+        return _required_text(feedback, "review.feedback")
+    reasons = review.get("reasons")
+    if isinstance(reasons, list):
+        usable = [
+            reason.strip()
+            for reason in reasons
+            if isinstance(reason, str) and reason.strip()
+        ]
+        if usable:
+            return redact_text(" ".join(usable))
+    raise MemoryEvidenceError("review must contain feedback or reasons")
+
+
 def _verified_status(run_dir: Path) -> None:
     try:
         lines = (run_dir / "final-report.md").read_text(encoding="utf-8").splitlines()
@@ -202,7 +218,7 @@ def _entry_from_run(run_dir: Path) -> MemoryEntry:
         "run_id": _required_text(resolved.name, "run_id"),
         "issue": _required_text(config.get("issue"), "issue"),
         "root_cause": _required_text(investigation.get("root_cause"), "root_cause"),
-        "repair_summary": _required_text(review.get("feedback"), "review.feedback"),
+        "repair_summary": _review_summary(review),
         "changed_paths": changed_paths,
         "evidence_paths": evidence_paths,
     }

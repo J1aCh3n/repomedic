@@ -11,12 +11,13 @@ from repomedic.agent_graph import AgentGraphRunner, AgentRunResult
 from repomedic.artifacts import ArtifactWriter
 from repomedic.benchmark import BenchmarkSuite
 from repomedic.harness import DeterministicHarness
+from repomedic.memory import EpisodicMemoryStore
 from repomedic.model_clients import ScriptedModel, StructuredModel
 from repomedic.prompts import PROMPT_VERSION
 from repomedic.workspace import resolve_within
 
 
-BENCHMARK_PROTOCOL_VERSION = "multi-agent-review-v2"
+BENCHMARK_PROTOCOL_VERSION = "multi-agent-memory-v1"
 _TERMINAL_STATUSES = {
     "verified",
     "tests_failed",
@@ -54,6 +55,8 @@ def start_benchmark(
     harness: DeterministicHarness,
     runs_root: Path,
     run_id: str | None = None,
+    memory_store: EpisodicMemoryStore | None = None,
+    memory_limit: int = 3,
 ) -> BenchmarkStartResult:
     root = runs_root.resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -72,6 +75,11 @@ def start_benchmark(
         "model": model.model_id,
         "reasoning_effort": getattr(model, "reasoning_effort", None),
         "prompt_version": PROMPT_VERSION,
+        "memory": {
+            "enabled": memory_store is not None,
+            "database": str(memory_store.path) if memory_store else None,
+            "limit": memory_limit,
+        },
         "case_runs": [],
     }
     _write_benchmark(run_dir, record)
@@ -81,7 +89,13 @@ def start_benchmark(
         prepared = harness.prepare_case(case.case_dir, cases_root, run_id="attempt_1")
         checkpoint = prepared.layout.run_dir / "checkpoint.sqlite"
         with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
-            result = AgentGraphRunner(model, harness, saver).start(prepared)
+            result = AgentGraphRunner(
+                model,
+                harness,
+                saver,
+                memory_store=memory_store,
+                memory_limit=memory_limit,
+            ).start(prepared)
         results.append(result)
         record["case_runs"].append(
             {

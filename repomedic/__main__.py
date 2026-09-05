@@ -9,7 +9,9 @@ from repomedic.agent_schemas import ApprovalDecision
 from repomedic.benchmark import load_suite
 from repomedic.benchmark_run import start_benchmark, summarize_benchmark
 from repomedic.harness import DeterministicHarness
+from repomedic.memory import EpisodicMemoryStore
 from repomedic.model_clients import OpenAIResponsesModel, ScriptedModel
+from repomedic.prompts import PROMPT_VERSION
 from repomedic.sandbox import DEFAULT_DOCKER_IMAGE, DockerSandbox
 from repomedic.web_ui import serve_control_panel
 
@@ -35,6 +37,8 @@ def _parser() -> ArgumentParser:
         choices=("none", "low", "medium", "high", "xhigh", "max"),
     )
     run_agent.add_argument("--docker-image", default=DEFAULT_DOCKER_IMAGE)
+    run_agent.add_argument("--memory-db", type=Path)
+    run_agent.add_argument("--memory-limit", type=int, default=3)
 
     decide = subparsers.add_parser(
         "decide-agent", help="approve, revise, or reject a paused Agent run"
@@ -79,11 +83,28 @@ def _parser() -> ArgumentParser:
     start_benchmark_parser.add_argument(
         "--docker-image", default=DEFAULT_DOCKER_IMAGE
     )
+    start_benchmark_parser.add_argument("--memory-db", type=Path)
+    start_benchmark_parser.add_argument("--memory-limit", type=int, default=3)
 
     benchmark_status = subparsers.add_parser(
         "benchmark-status", help="aggregate a checkpointed benchmark run"
     )
     benchmark_status.add_argument("run_dir", type=Path)
+
+    memory_learn = subparsers.add_parser(
+        "memory-learn", help="write one verified approved run to episodic memory"
+    )
+    memory_learn.add_argument("run_dir", type=Path)
+    memory_learn.add_argument("--memory-db", type=Path, required=True)
+
+    memory_search = subparsers.add_parser(
+        "memory-search", help="search evidence-gated episodic memory"
+    )
+    memory_search.add_argument("query")
+    memory_search.add_argument("--memory-db", type=Path, required=True)
+    memory_search.add_argument("--fixture")
+    memory_search.add_argument("--exclude-case")
+    memory_search.add_argument("--limit", type=int, default=3)
     return parser
 
 
@@ -97,7 +118,9 @@ def _checkpoint_path(run_dir: Path) -> Path:
     return checkpoint
 
 
-def _configured_agent(run_dir: Path) -> tuple[str, str | None]:
+def _configured_agent(
+    run_dir: Path,
+) -> tuple[str, str | None, Path | None, int]:
     config_path = run_dir.resolve() / "config.json"
     try:
         config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -109,9 +132,38 @@ def _configured_agent(run_dir: Path) -> tuple[str, str | None]:
     if not isinstance(model, str) or not model.strip():
         raise ValueError(f"run has no valid Agent model configuration: {config_path}")
     effort = config["agent_graph"].get("reasoning_effort")
-    if effort is not None and effort not in {"none", "low", "medium", "high", "xhigh", "max"}:
+    if effort is not None and effort not in {
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    }:
         raise ValueError(f"run has an invalid reasoning effort: {effort!r}")
-    return model, effort
+    configured_prompt = config["agent_graph"].get("prompt_version")
+    if configured_prompt != PROMPT_VERSION:
+        raise ValueError(
+            f"run prompt version {configured_prompt!r} cannot resume under "
+            f"{PROMPT_VERSION!r}"
+        )
+    memory = config.get("memory", {"enabled": False, "limit": 3})
+    if not isinstance(memory, dict):
+        raise ValueError(f"run has an invalid memory configuration: {config_path}")
+    memory_limit = memory.get("limit", 3)
+    if (
+        not isinstance(memory_limit, int)
+        or isinstance(memory_limit, bool)
+        or not 1 <= memory_limit <= 10
+    ):
+        raise ValueError(f"run has an invalid memory limit: {memory_limit!r}")
+    memory_path: Path | None = None
+    if memory.get("enabled") is True:
+        database = memory.get("database")
+        if not isinstance(database, str) or not database.strip():
+            raise ValueError(f"run has no valid memory database: {config_path}")
+        memory_path = Path(database)
+    return model, effort, memory_path, memory_limit
 
 
 def _print_agent_result(result: AgentRunResult) -> None:
@@ -122,15 +174,25 @@ def _print_agent_result(result: AgentRunResult) -> None:
         print(f"ui=repomedic serve-agent \"{result.run_dir}\"")
     if result.error:
         print(f"error={result.error}")
+    if result.memory and result.memory.get("write"):
+        print(f"memory_entry={result.memory['write']['entry_id']}")
 
 
 def _openai_runner(
-    *, model: str, reasoning_effort: str | None, image: str, saver: SqliteSaver
+    *,
+    model: str,
+    reasoning_effort: str | None,
+    image: str,
+    saver: SqliteSaver,
+    memory_path: Path | None,
+    memory_limit: int,
 ) -> AgentGraphRunner:
     return AgentGraphRunner(
         OpenAIResponsesModel(model, reasoning_effort=reasoning_effort),
         DeterministicHarness(sandbox=DockerSandbox(image=image)),
         saver,
+        memory_store=EpisodicMemoryStore(memory_path) if memory_path else None,
+        memory_limit=memory_limit,
     )
 
 
@@ -158,6 +220,12 @@ def main() -> None:
                 ),
                 harness,
                 saver,
+                memory_store=(
+                    EpisodicMemoryStore(args.memory_db)
+                    if args.memory_db is not None
+                    else None
+                ),
+                memory_limit=args.memory_limit,
             ).start(prepared)
         _print_agent_result(result)
         raise SystemExit(
@@ -165,13 +233,15 @@ def main() -> None:
         )
     if args.command == "decide-agent":
         database = _checkpoint_path(args.run_dir)
-        model, effort = _configured_agent(args.run_dir)
+        model, effort, memory_path, memory_limit = _configured_agent(args.run_dir)
         with SqliteSaver.from_conn_string(str(database)) as saver:
             runner = _openai_runner(
                 model=model,
                 reasoning_effort=effort,
                 image=args.docker_image,
                 saver=saver,
+                memory_path=memory_path,
+                memory_limit=memory_limit,
             )
             result = runner.resume(
                 args.run_dir.resolve().name,
@@ -193,13 +263,15 @@ def main() -> None:
         if not 1 <= args.port <= 65535:
             raise ValueError("port must be between 1 and 65535")
         database = _checkpoint_path(args.run_dir)
-        model, effort = _configured_agent(args.run_dir)
+        model, effort, memory_path, memory_limit = _configured_agent(args.run_dir)
         with SqliteSaver.from_conn_string(str(database)) as saver:
             runner = _openai_runner(
                 model=model,
                 reasoning_effort=effort,
                 image=args.docker_image,
                 saver=saver,
+                memory_path=memory_path,
+                memory_limit=memory_limit,
             )
             serve_control_panel(
                 runner, run_id=args.run_dir.resolve().name, port=args.port
@@ -220,6 +292,12 @@ def main() -> None:
             ),
             runs_root=args.runs_root,
             run_id=args.run_id,
+            memory_store=(
+                EpisodicMemoryStore(args.memory_db)
+                if args.memory_db is not None
+                else None
+            ),
+            memory_limit=args.memory_limit,
         )
         print(f"run_dir={started.run_dir}")
         for result in started.case_results:
@@ -232,6 +310,27 @@ def main() -> None:
         print(f"complete={str(summary['complete']).lower()}")
         print(f"verified={summary['verified']}/{summary['case_count']}")
         print(f"summary={args.run_dir.resolve() / 'summary.md'}")
+        return
+    if args.command == "memory-learn":
+        entry = EpisodicMemoryStore(args.memory_db).record_verified_run(args.run_dir)
+        print(f"entry_id={entry.entry_id}")
+        print(f"case_id={entry.case_id}")
+        print(f"run_id={entry.run_id}")
+        return
+    if args.command == "memory-search":
+        matches = EpisodicMemoryStore(args.memory_db).search(
+            args.query,
+            fixture_id=args.fixture,
+            exclude_case_id=args.exclude_case,
+            limit=args.limit,
+        )
+        print(
+            json.dumps(
+                [match.prompt_value() for match in matches],
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
         return
 
 

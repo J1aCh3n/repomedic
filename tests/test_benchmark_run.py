@@ -5,6 +5,7 @@ import json
 from repomedic.benchmark import load_suite
 from repomedic.benchmark_run import start_benchmark, summarize_benchmark
 from repomedic.harness import DeterministicHarness
+from repomedic.memory import EpisodicMemoryStore
 from repomedic.model_clients import ScriptedModel
 from tests.helpers import temporary_directory
 
@@ -100,18 +101,29 @@ class BenchmarkRunTests(unittest.TestCase):
             }
         )
         with temporary_directory() as temp_dir:
+            memory_store = EpisodicMemoryStore(Path(temp_dir) / "memory.sqlite")
             started = start_benchmark(
                 suite,
                 model=model,
                 harness=DeterministicHarness(sandbox=UnusedSandbox()),
                 runs_root=Path(temp_dir),
                 run_id="benchmark_run",
+                memory_store=memory_store,
+                memory_limit=2,
             )
             summary = summarize_benchmark(started.run_dir)
+            benchmark = json.loads(
+                (started.run_dir / "benchmark.json").read_text(encoding="utf-8")
+            )
 
             self.assertEqual(summary["status_counts"], {"awaiting_approval": 1})
             self.assertEqual(summary["usage"]["model_calls"], 4)
             self.assertEqual(summary["cases"][0]["usage"]["calls"], 4)
+            self.assertEqual(
+                benchmark["protocol_version"], "multi-agent-memory-v1"
+            )
+            self.assertTrue(benchmark["memory"]["enabled"])
+            self.assertEqual(benchmark["memory"]["limit"], 2)
 
 
 if __name__ == "__main__":

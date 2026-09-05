@@ -23,6 +23,7 @@ from repomedic.agent_tools import (
 from repomedic.artifacts import ArtifactWriter
 from repomedic.harness import DeterministicHarness, PreparedRun
 from repomedic.manifest import load_manifest
+from repomedic.memory import EpisodicMemoryStore
 from repomedic.model_clients import (
     ModelClientError,
     ModelResult,
@@ -73,6 +74,8 @@ class AgentState(TypedDict, total=False):
     policy: dict[str, Any]
     review: dict[str, Any]
     review_feedback: str
+    memory_lessons: list[dict[str, Any]]
+    memory: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -86,6 +89,7 @@ class AgentRunResult:
     proposal_diff: str | None
     error: str | None
     usage: dict[str, int] | None = None
+    memory: dict[str, Any] | None = None
 
 
 def _thread_config(run_id: str) -> dict[str, dict[str, str]]:
@@ -116,10 +120,16 @@ class AgentGraphRunner:
         model: StructuredModel,
         harness: DeterministicHarness,
         checkpointer: Any,
+        memory_store: EpisodicMemoryStore | None = None,
+        memory_limit: int = 3,
     ) -> None:
+        if not 1 <= memory_limit <= 10:
+            raise ValueError("memory limit must be between 1 and 10")
         self.model = model
         self.harness = harness
         self.checkpointer = checkpointer
+        self.memory_store = memory_store
+        self.memory_limit = memory_limit
         self.graph = self._compile()
 
     def _compile(self) -> Any:
@@ -289,6 +299,7 @@ class AgentGraphRunner:
                     "expected_behavior": state["expected_behavior"],
                     "repository_files": files,
                     "allowed_paths": state["allowed_paths"],
+                    "memory_lessons": state["memory_lessons"],
                     "review_feedback": state.get("review_feedback", ""),
                 },
                 output_type=PlanReport,
@@ -659,7 +670,22 @@ class AgentGraphRunner:
                 **state["usage"],
             },
         )
-        return {"status": status}
+        updates: AgentState = {"status": status}
+        if status == "verified" and self.memory_store is not None:
+            entry = self.memory_store.record_verified_run(Path(state["run_dir"]))
+            memory = dict(state["memory"])
+            memory["write"] = {
+                "status": "stored",
+                "entry_id": entry.entry_id,
+                "case_id": entry.case_id,
+                "run_id": entry.run_id,
+            }
+            self._writer(state).write_json("memory.json", memory)
+            self._writer(state).append_trace(
+                "memory_written", {"entry_id": entry.entry_id}
+            )
+            updates["memory"] = memory
+        return updates
 
     @staticmethod
     def _status_from_report(path: Path) -> str:
@@ -701,6 +727,24 @@ class AgentGraphRunner:
         return {}
 
     def start(self, prepared: PreparedRun) -> AgentRunResult:
+        matches = (
+            self.memory_store.search(
+                prepared.manifest.issue,
+                fixture_id=prepared.manifest.fixture.fixture_id,
+                exclude_case_id=prepared.manifest.case_id,
+                limit=self.memory_limit,
+            )
+            if self.memory_store is not None
+            else ()
+        )
+        lessons = [match.prompt_value() for match in matches]
+        memory_data: dict[str, Any] = {
+            "enabled": self.memory_store is not None,
+            "database": str(self.memory_store.path) if self.memory_store else None,
+            "limit": self.memory_limit,
+            "retrieved": lessons,
+            "write": None,
+        }
         state: AgentState = {
             "case_id": prepared.manifest.case_id,
             "run_id": prepared.layout.run_id,
@@ -729,6 +773,8 @@ class AgentGraphRunner:
                 "calls": 0,
             },
             "review_feedback": "",
+            "memory_lessons": lessons,
+            "memory": memory_data,
         }
         config = _thread_config(prepared.layout.run_id)
         config_path = prepared.layout.run_dir / "config.json"
@@ -739,7 +785,25 @@ class AgentGraphRunner:
             "prompt_version": PROMPT_VERSION,
             "checkpoint": "checkpoint.sqlite",
         }
-        ArtifactWriter(prepared.layout.run_dir).write_json("config.json", config_data)
+        config_data["memory"] = {
+            "enabled": self.memory_store is not None,
+            "database": str(self.memory_store.path) if self.memory_store else None,
+            "limit": self.memory_limit,
+            "retrieved_entry_ids": [match.entry.entry_id for match in matches],
+        }
+        writer = ArtifactWriter(prepared.layout.run_dir)
+        writer.write_json("config.json", config_data)
+        writer.write_json("memory.json", memory_data)
+        writer.append_trace(
+            "memory_retrieved",
+            {
+                "enabled": self.memory_store is not None,
+                "entries": [
+                    {"entry_id": match.entry.entry_id, "score": match.score}
+                    for match in matches
+                ],
+            },
+        )
         self.graph.invoke(state, config)
         return self.inspect(prepared.layout.run_id)
 
@@ -771,4 +835,5 @@ class AgentGraphRunner:
                 "repair_iterations": state["iterations"],
                 **state["usage"],
             },
+            memory=state.get("memory"),
         )
