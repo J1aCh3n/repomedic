@@ -69,6 +69,12 @@ def _parser() -> ArgumentParser:
     start_benchmark_parser.add_argument(
         "--runs-root", type=Path, default=Path("runs") / "benchmarks"
     )
+    start_benchmark_parser.add_argument(
+        "--case",
+        dest="case_ids",
+        action="append",
+        help="run only this case ID; repeat to select multiple cases",
+    )
     start_benchmark_parser.add_argument("--run-id")
     start_benchmark_parser.add_argument(
         "--docker-image", default=DEFAULT_DOCKER_IMAGE
@@ -204,7 +210,10 @@ def main() -> None:
             args.model, reasoning_effort=args.reasoning_effort
         )
         started = start_benchmark(
-            load_suite(args.suite),
+            load_suite(
+                args.suite,
+                case_ids=tuple(args.case_ids) if args.case_ids else None,
+            ),
             model=model,
             harness=DeterministicHarness(
                 sandbox=DockerSandbox(image=args.docker_image)
