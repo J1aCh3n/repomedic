@@ -9,7 +9,9 @@ and twelve-case development-dataset phases. The three Phase 5 Agent
 configurations, three-attempt pass@1/pass@3 accounting, evidence-gated episodic
 memory, bounded Planner context, frozen benchmark corpora, corpus fingerprinting,
 and four-arm comparison tooling are implemented. The unified live
-configuration comparison and matched memory ablation have not yet completed.
+configuration comparison and matched memory ablation are complete on the
+stratified six-case development subset. They are not a full twelve-case or
+held-out evaluation.
 `README.md` is the current design authority. Do not claim that any proposed
 feature, benchmark, metric, or safety property has been implemented until
 current code and saved evidence prove it.

@@ -8,6 +8,10 @@
 
 RepoMedic is a proposed LangGraph-based multi-agent coding system that turns a small repository issue into a tested patch and an auditable evidence bundle. It is intended to extend the ideas explored in [`langgraph_file_editor`](../langgraph_file_editor/) from controlled file operations to repository-level diagnosis, implementation, testing, reflection, and human approval.
 
+This is an experimental learning project, not a production repair service. See
+[`CONTRIBUTING.md`](CONTRIBUTING.md) before proposing changes and
+[`SECURITY.md`](SECURITY.md) for the security model and reporting process.
+
 The project must demonstrate real Agent-system engineering rather than a collection of role prompts. A deterministic orchestrator owns state transitions, budgets, retries, and safety. LLM agents perform only the steps that require model judgment.
 
 ## Project objective
@@ -635,5 +639,11 @@ repomedic compare-preflight `
 
 The command first applies the strict three-arm configuration checks, then the
 frozen-corpus memory checks, and finally writes one four-row report plus both
-component reports. The infrastructure is implemented; no configuration or
-memory uplift is claimed until these live-model runs are completed.
+component reports. The completed six-case result is documented in
+[`benchmarks/results/preflight_6_ablation_20260905.md`](benchmarks/results/preflight_6_ablation_20260905.md).
+It found no measurable Reviewer or memory success-rate uplift on this subset.
+
+## License
+
+RepoMedic, including its synthetic benchmark fixtures and tests, is released
+under the [MIT License](LICENSE).

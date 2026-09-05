@@ -1,8 +1,15 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+.venv/
+build/
+dist/
 .phase2-validation/
 .coverage
 .pytest_cache/
+.repomedic/
+.env
+.env.*
+!.env.example
 runs/
 tests/.tmp/
