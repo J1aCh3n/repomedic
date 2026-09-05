@@ -1,0 +1,40 @@
+case_id: task_scheduler_008
+category: small_feature
+fixture:
+  id: task_scheduler
+  version: task_scheduler-v1
+issue: >-
+  Add `Scheduler.reschedule(task_id, starts_at, *, now)`. A successful
+  reschedule must preserve the task's ID, title, and duration while replacing
+  its stored start time. Unknown tasks, past times, and conflicts must raise
+  `ValueError` without changing the stored task. Conflict checks must ignore
+  the task being rescheduled.
+runnable_entry_point:
+  argv: [python, -m, task_scheduler.cli]
+  cwd: repo
+tests:
+  public:
+    argv: [python, -m, unittest, discover, -s, tests, -v]
+    cwd: repo
+  evaluator:
+    argv: [python, -m, unittest, discover, -s, hidden_tests, -v]
+    cwd: evaluator
+paths:
+  allowed:
+    - task_scheduler/policies.py
+    - task_scheduler/scheduler.py
+    - task_scheduler/storage.py
+  forbidden:
+    - .git
+    - .env
+    - tests
+    - evaluator
+limits:
+  wall_time_seconds: 60
+  tool_calls: 24
+  repair_iterations: 2
+expected_behavior:
+  - Rescheduling a stored task replaces only its start time.
+  - The rescheduled task retains its ID, title, and duration.
+  - The task does not conflict with itself during validation.
+  - Unknown, past, and conflicting reschedules raise `ValueError` without side effects.

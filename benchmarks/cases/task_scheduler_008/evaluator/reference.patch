@@ -1,0 +1,69 @@
+diff --git a/task_scheduler/policies.py b/task_scheduler/policies.py
+--- a/task_scheduler/policies.py
++++ b/task_scheduler/policies.py
+@@ -18,6 +18,12 @@ def ensure_no_conflict(
+     starts_at: datetime,
+     duration_minutes: int,
+     existing_tasks: Iterable[Task],
++    *,
++    exclude_task_id: str | None = None,
+ ) -> None:
+-    if any(overlaps(starts_at, duration_minutes, task) for task in existing_tasks):
++    if any(
++        task.task_id != exclude_task_id
++        and overlaps(starts_at, duration_minutes, task)
++        for task in existing_tasks
++    ):
+         raise ValueError("task conflicts with an existing task")
+
+diff --git a/task_scheduler/scheduler.py b/task_scheduler/scheduler.py
+--- a/task_scheduler/scheduler.py
++++ b/task_scheduler/scheduler.py
+@@ -33,6 +33,32 @@ class Scheduler:
+         self._store.save(task)
+         return task
+ 
++    def reschedule(
++        self,
++        task_id: str,
++        starts_at: datetime,
++        *,
++        now: datetime,
++    ) -> Task:
++        existing = self._store.get(task_id)
++        if existing is None:
++            raise ValueError(f"unknown task: {task_id}")
++        ensure_future(starts_at, now)
++        ensure_no_conflict(
++            starts_at,
++            existing.duration_minutes,
++            self._store.all(),
++            exclude_task_id=task_id,
++        )
++        updated = Task(
++            task_id=existing.task_id,
++            title=existing.title,
++            starts_at=starts_at,
++            duration_minutes=existing.duration_minutes,
++        )
++        self._store.replace(updated)
++        return updated
++
+     def upcoming(self, after: datetime) -> tuple[Task, ...]:
+         return tuple(
+             sorted(
+
+diff --git a/task_scheduler/storage.py b/task_scheduler/storage.py
+--- a/task_scheduler/storage.py
++++ b/task_scheduler/storage.py
+@@ -17,5 +17,10 @@ class InMemoryTaskStore:
+     def get(self, task_id: str) -> Task | None:
+         return self._tasks.get(task_id)
+ 
++    def replace(self, task: Task) -> None:
++        if task.task_id not in self._tasks:
++            raise ValueError(f"unknown task: {task.task_id}")
++        self._tasks[task.task_id] = task
++
+     def all(self) -> tuple[Task, ...]:
+         return tuple(self._tasks.values())
