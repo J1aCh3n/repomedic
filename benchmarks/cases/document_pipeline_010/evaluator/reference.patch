@@ -1,0 +1,10 @@
+diff --git a/document_pipeline/loader.py b/document_pipeline/loader.py
+--- a/document_pipeline/loader.py
++++ b/document_pipeline/loader.py
+@@ -11,5 +11,5 @@ def load_document(source: Path) -> Document:
+     return Document(
+         title=lines[0].strip(),
+         paragraphs=paragraphs,
+-        source=str(source),
++        source=source,
+     )
