@@ -2,7 +2,8 @@
 
 The current benchmark implementation includes an eight-case development suite,
 deterministic harness, and Agent graph. The first four cases have recorded
-live-model results; cases 005-008 are ready for their first measured run.
+live-model results, and the staged eight-case checkpoint is recorded in
+`results/initial_8_20260905.md`.
 
 ## Layout
 
