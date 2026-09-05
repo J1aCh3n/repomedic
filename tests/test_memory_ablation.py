@@ -10,14 +10,18 @@ from tests.helpers import temporary_directory
 def _summary(*, verified: int, statuses: list[str]) -> dict:
     return {
         "suite_id": "family_suite",
-        "protocol_version": "agent-config-ablation-v1",
+        "protocol_version": "agent-config-ablation-v2",
         "model": "scripted",
         "reasoning_effort": None,
         "prompt_version": "agent-graph-v5",
         "agent_mode": "multi_agent_review",
+        "attempts_per_case": 1,
         "complete": True,
         "case_count": 2,
+        "run_count": 2,
         "verified": verified,
+        "pass_at_1": verified / 2,
+        "pass_at_3": None,
         "status_counts": {},
         "usage": {
             "input_tokens": 10,
@@ -29,8 +33,8 @@ def _summary(*, verified: int, statuses: list[str]) -> dict:
             "average_model_latency_ms": 12,
         },
         "cases": [
-            {"case_id": "family_001", "status": statuses[0]},
-            {"case_id": "family_002", "status": statuses[1]},
+            {"case_id": "family_001", "attempt": 1, "status": statuses[0]},
+            {"case_id": "family_002", "attempt": 1, "status": statuses[1]},
         ],
     }
 
@@ -44,6 +48,7 @@ def _write_benchmark(run_dir: Path, *, memory_enabled: bool) -> None:
     )
     record = {
         "agent_mode": "multi_agent_review",
+        "attempts_per_case": 1,
         "memory": {
             "enabled": memory_enabled,
             "context_budget_chars": 2400,
@@ -52,11 +57,13 @@ def _write_benchmark(run_dir: Path, *, memory_enabled: bool) -> None:
         "case_runs": [
             {
                 "case_id": "family_001",
+                "attempt": 1,
                 "run_id": "attempt_1",
                 "run_dir": "cases/family_001/attempt_1",
             },
             {
                 "case_id": "family_002",
+                "attempt": 1,
                 "run_id": "attempt_1",
                 "run_dir": "cases/family_002/attempt_1",
             },
@@ -124,13 +131,13 @@ class MemoryAblationTests(unittest.TestCase):
             ):
                 report = compare_memory_ablation(baseline, treatment, output)
 
-            self.assertEqual(report["delta"]["verified_tasks"], 1)
+            self.assertEqual(report["delta"]["verified_runs"], 1)
             self.assertEqual(report["delta"]["verified_rate"], 0.5)
             self.assertEqual(report["memory_evidence"]["covered_cases"], 2)
             self.assertEqual(report["memory_evidence"]["retrieval_count"], 2)
             self.assertTrue((output / "summary.json").is_file())
             self.assertIn(
-                "Verified-task uplift: `+1`",
+                "Verified-run uplift: `+1`",
                 (output / "summary.md").read_text(encoding="utf-8"),
             )
 

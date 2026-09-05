@@ -482,7 +482,7 @@ repomedic start-benchmark benchmarks/suites/initial_12.yaml `
 
 ## Phase 5 Agent configuration ablation
 
-The current `agent-graph-v5` / `agent-config-ablation-v1` protocol exposes three
+The current `agent-graph-v5` / `agent-config-ablation-v2` protocol exposes three
 memory-free modes while holding the fixture, schemas, tool restrictions,
 approval gate, Docker tests, and artifact accounting constant:
 
@@ -494,33 +494,39 @@ approval gate, Docker tests, and artifact accounting constant:
 - `multi_agent_review`: the full Planner, Investigator, Coder, and Reviewer
   graph can revise or replan within the recorded limits.
 
-Start the three matched runs with explicit modes and no memory database:
+Start the three matched runs with explicit modes, three independent attempts
+per case, and no memory database. This creates 36 case-runs per configuration
+and 108 case-runs across the three configurations; each proposal that reaches
+the approval gate must be inspected and decided separately:
 
 ```powershell
 repomedic start-benchmark benchmarks/suites/initial_12.yaml `
   --model gpt-5.6-terra --reasoning-effort low `
-  --agent-mode single_agent --run-id phase5-single-v1
+  --agent-mode single_agent --attempts 3 --run-id phase5-single-v2
 repomedic start-benchmark benchmarks/suites/initial_12.yaml `
   --model gpt-5.6-terra --reasoning-effort low `
-  --agent-mode multi_agent_no_review --run-id phase5-no-review-v1
+  --agent-mode multi_agent_no_review --attempts 3 --run-id phase5-no-review-v2
 repomedic start-benchmark benchmarks/suites/initial_12.yaml `
   --model gpt-5.6-terra --reasoning-effort low `
-  --agent-mode multi_agent_review --run-id phase5-review-v1
+  --agent-mode multi_agent_review --attempts 3 --run-id phase5-review-v2
 ```
 
 After every case reaches a terminal status, generate the matched comparison:
 
 ```powershell
 repomedic compare-configurations `
-  runs/benchmarks/initial_12/phase5-single-v1 `
-  runs/benchmarks/initial_12/phase5-no-review-v1 `
-  runs/benchmarks/initial_12/phase5-review-v1 `
-  --output-dir runs/configuration-ablation/phase5-v1
+  runs/benchmarks/initial_12/phase5-single-v2 `
+  runs/benchmarks/initial_12/phase5-no-review-v2 `
+  runs/benchmarks/initial_12/phase5-review-v2 `
+  --output-dir runs/configuration-ablation/phase5-v2
 ```
 
-The comparator rejects incomplete runs, enabled memory, wrong modes, different
-case ordering, or mismatched suite, model, reasoning, prompt, and protocol. Old
-staged v1/v2 runs cannot be merged into this result.
+The comparator rejects incomplete runs, fewer than three attempts per case,
+enabled memory, wrong modes, different ordered case-attempt pairs, or mismatched
+suite, model, reasoning, prompt, and protocol. `pass@1` is the mean single-sample
+success estimate across the three attempts; `pass@3` is the estimated chance
+that at least one of three samples succeeds. Old staged v1/v2 runs cannot be
+merged into this result.
 
 ## Phase 6 episodic memory
 

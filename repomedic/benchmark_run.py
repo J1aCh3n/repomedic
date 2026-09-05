@@ -1,5 +1,6 @@
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from math import comb
 from pathlib import Path
 from typing import Any
 import json
@@ -25,7 +26,7 @@ from repomedic.prompts import PROMPT_VERSION
 from repomedic.workspace import resolve_within
 
 
-BENCHMARK_PROTOCOL_VERSION = "agent-config-ablation-v1"
+BENCHMARK_PROTOCOL_VERSION = "agent-config-ablation-v2"
 _TERMINAL_STATUSES = {
     "verified",
     "tests_failed",
@@ -67,7 +68,14 @@ def start_benchmark(
     memory_limit: int = 3,
     memory_context_budget_chars: int = DEFAULT_MEMORY_CONTEXT_BUDGET_CHARS,
     agent_mode: AgentMode = DEFAULT_AGENT_MODE,
+    attempts_per_case: int = 1,
 ) -> BenchmarkStartResult:
+    if (
+        not isinstance(attempts_per_case, int)
+        or isinstance(attempts_per_case, bool)
+        or not 1 <= attempts_per_case <= 3
+    ):
+        raise ValueError("attempts per case must be between 1 and 3")
     root = runs_root.resolve()
     root.mkdir(parents=True, exist_ok=True)
     suite_root = resolve_within(root, suite.suite_id)
@@ -87,6 +95,7 @@ def start_benchmark(
         "reasoning_effort": getattr(model, "reasoning_effort", None),
         "prompt_version": PROMPT_VERSION,
         "agent_mode": agent_mode,
+        "attempts_per_case": attempts_per_case,
         "memory": {
             "enabled": memory_store is not None,
             "database": str(memory_store.path) if memory_store else None,
@@ -100,39 +109,51 @@ def start_benchmark(
 
     results: list[AgentRunResult] = []
     for case in suite.cases:
-        prepared = harness.prepare_case(case.case_dir, cases_root, run_id="attempt_1")
-        checkpoint = prepared.layout.run_dir / "checkpoint.sqlite"
-        with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
-            result = AgentGraphRunner(
-                model,
-                harness,
-                saver,
-                memory_store=memory_store,
-                memory_limit=memory_limit,
-                memory_context_budget_chars=memory_context_budget_chars,
-                agent_mode=agent_mode,
-            ).start(prepared)
-        results.append(result)
-        record["case_runs"].append(
-            {
-                "case_id": case.case_id,
-                "run_id": result.run_id,
-                "run_dir": str(Path(result.run_dir).relative_to(run_dir)),
-                "initial_status": result.status,
-            }
-        )
-        _write_benchmark(run_dir, record)
+        for attempt in range(1, attempts_per_case + 1):
+            prepared = harness.prepare_case(
+                case.case_dir, cases_root, run_id=f"attempt_{attempt}"
+            )
+            checkpoint = prepared.layout.run_dir / "checkpoint.sqlite"
+            with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
+                result = AgentGraphRunner(
+                    model,
+                    harness,
+                    saver,
+                    memory_store=memory_store,
+                    memory_limit=memory_limit,
+                    memory_context_budget_chars=memory_context_budget_chars,
+                    agent_mode=agent_mode,
+                ).start(prepared)
+            results.append(result)
+            record["case_runs"].append(
+                {
+                    "case_id": case.case_id,
+                    "attempt": attempt,
+                    "run_id": result.run_id,
+                    "run_dir": str(Path(result.run_dir).relative_to(run_dir)),
+                    "initial_status": result.status,
+                }
+            )
+            _write_benchmark(run_dir, record)
 
     return BenchmarkStartResult(run_dir=run_dir, case_results=tuple(results))
 
 
 def _summary_markdown(summary: dict[str, Any]) -> str:
+    pass_at_3 = (
+        f"{summary['pass_at_3']:.1%}"
+        if summary["pass_at_3"] is not None
+        else "not measured"
+    )
     lines = [
         f"# Benchmark run: {summary['suite_id']}",
         "",
         f"- Complete: `{str(summary['complete']).lower()}`",
         f"- Agent mode: `{summary['agent_mode']}`",
-        f"- Verified: `{summary['verified']}/{summary['case_count']}`",
+        f"- Attempts per case: `{summary['attempts_per_case']}`",
+        f"- Verified runs: `{summary['verified']}/{summary['run_count']}`",
+        f"- pass@1: `{summary['pass_at_1']:.1%}`",
+        f"- pass@3: `{pass_at_3}`",
         f"- Total input tokens: `{summary['usage']['input_tokens']}`",
         f"- Total output tokens: `{summary['usage']['output_tokens']}`",
         f"- Total model calls: `{summary['usage']['model_calls']}`",
@@ -143,9 +164,30 @@ def _summary_markdown(summary: dict[str, Any]) -> str:
         "",
     ]
     for case in summary["cases"]:
-        lines.append(f"- `{case['case_id']}`: `{case['status']}`")
+        lines.append(
+            f"- `{case['case_id']}` attempt `{case['attempt']}`: `{case['status']}`"
+        )
     lines.append("")
     return "\n".join(lines)
+
+
+def _pass_at_k(
+    case_rows: list[dict[str, Any]], case_ids: tuple[str, ...], k: int
+) -> float:
+    estimates: list[float] = []
+    for case_id in case_ids:
+        rows = [row for row in case_rows if row["case_id"] == case_id]
+        sample_count = len(rows)
+        correct_count = sum(row["status"] == "verified" for row in rows)
+        if sample_count < k:
+            raise ValueError(f"case {case_id} has fewer than {k} attempts")
+        failure_probability = (
+            comb(sample_count - correct_count, k) / comb(sample_count, k)
+            if sample_count - correct_count >= k
+            else 0.0
+        )
+        estimates.append(1.0 - failure_probability)
+    return sum(estimates) / len(estimates)
 
 
 def summarize_benchmark(run_dir: Path) -> dict[str, Any]:
@@ -186,6 +228,7 @@ def summarize_benchmark(run_dir: Path) -> dict[str, Any]:
         case_rows.append(
             {
                 "case_id": case["case_id"],
+                "attempt": case.get("attempt", 1),
                 "run_dir": str(case_run),
                 "status": result.status,
                 "usage": usage,
@@ -198,6 +241,38 @@ def summarize_benchmark(run_dir: Path) -> dict[str, Any]:
     )
 
     complete = all(row["status"] in _TERMINAL_STATUSES for row in case_rows)
+    case_ids = tuple(dict.fromkeys(row["case_id"] for row in case_rows))
+    attempts_per_case = record.get("attempts_per_case", 1)
+    if not case_ids:
+        raise ValueError("benchmark has no case runs")
+    if (
+        not isinstance(attempts_per_case, int)
+        or isinstance(attempts_per_case, bool)
+        or not 1 <= attempts_per_case <= 3
+    ):
+        raise ValueError("benchmark has invalid attempts_per_case")
+    if any(
+        not isinstance(row["attempt"], int)
+        or isinstance(row["attempt"], bool)
+        or not 1 <= row["attempt"] <= attempts_per_case
+        for row in case_rows
+    ):
+        raise ValueError("benchmark contains an invalid case attempt")
+    attempts_by_case = {
+        case_id: sum(row["case_id"] == case_id for row in case_rows)
+        for case_id in case_ids
+    }
+    if any(count != attempts_per_case for count in attempts_by_case.values()):
+        raise ValueError("benchmark case runs do not match attempts_per_case")
+    run_keys = [(row["case_id"], row["attempt"]) for row in case_rows]
+    if len(run_keys) != len(set(run_keys)):
+        raise ValueError("benchmark contains duplicate case attempts")
+    pass_at_1 = _pass_at_k(case_rows, case_ids, 1)
+    pass_at_3 = (
+        _pass_at_k(case_rows, case_ids, 3)
+        if attempts_per_case >= 3
+        else None
+    )
     summary: dict[str, Any] = {
         "suite_id": record["suite_id"],
         "protocol_version": record["protocol_version"],
@@ -205,9 +280,13 @@ def summarize_benchmark(run_dir: Path) -> dict[str, Any]:
         "reasoning_effort": record.get("reasoning_effort"),
         "prompt_version": record["prompt_version"],
         "agent_mode": record.get("agent_mode", DEFAULT_AGENT_MODE),
+        "attempts_per_case": attempts_per_case,
         "complete": complete,
-        "case_count": len(case_rows),
+        "case_count": len(case_ids),
+        "run_count": len(case_rows),
         "verified": status_counts.get("verified", 0),
+        "pass_at_1": pass_at_1,
+        "pass_at_3": pass_at_3,
         "status_counts": status_counts,
         "usage": usage_totals,
         "cases": case_rows,

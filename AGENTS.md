@@ -6,8 +6,9 @@ These instructions apply to the entire `repomedic` directory tree.
 
 RepoMedic has completed the fixture, deterministic harness, first Agent graph,
 and twelve-case development-dataset phases. The three Phase 5 Agent
-configurations, evidence-gated episodic memory, bounded Planner context, corpus
-fingerprinting, and paired-ablation tooling are implemented. The unified live
+configurations, three-attempt pass@1/pass@3 accounting, evidence-gated episodic
+memory, bounded Planner context, corpus fingerprinting, and paired-ablation
+tooling are implemented. The unified live
 configuration comparison and matched memory ablation have not yet completed.
 `README.md` is the current design authority. Do not claim that any proposed
 feature, benchmark, metric, or safety property has been implemented until

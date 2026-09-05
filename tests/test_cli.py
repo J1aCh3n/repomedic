@@ -24,6 +24,8 @@ class CliTests(unittest.TestCase):
                 "1800",
                 "--agent-mode",
                 "multi_agent_no_review",
+                "--attempts",
+                "3",
             ]
         )
 
@@ -35,6 +37,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.memory_limit, 2)
         self.assertEqual(args.memory_context_budget_chars, 1800)
         self.assertEqual(args.agent_mode, "multi_agent_no_review")
+        self.assertEqual(args.attempts, 3)
 
     def test_memory_commands_parse_explicit_database(self) -> None:
         learn = _parser().parse_args(

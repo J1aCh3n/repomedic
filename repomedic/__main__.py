@@ -102,6 +102,12 @@ def _parser() -> ArgumentParser:
     )
     start_benchmark_parser.add_argument("--run-id")
     start_benchmark_parser.add_argument(
+        "--attempts",
+        type=int,
+        default=1,
+        help="independent attempts per case (1-3)",
+    )
+    start_benchmark_parser.add_argument(
         "--docker-image", default=DEFAULT_DOCKER_IMAGE
     )
     start_benchmark_parser.add_argument("--memory-db", type=Path)
@@ -393,6 +399,7 @@ def main() -> None:
             memory_limit=args.memory_limit,
             memory_context_budget_chars=args.memory_context_budget_chars,
             agent_mode=args.agent_mode,
+            attempts_per_case=args.attempts,
         )
         print(f"run_dir={started.run_dir}")
         for result in started.case_results:
@@ -403,7 +410,10 @@ def main() -> None:
     if args.command == "benchmark-status":
         summary = summarize_benchmark(args.run_dir)
         print(f"complete={str(summary['complete']).lower()}")
-        print(f"verified={summary['verified']}/{summary['case_count']}")
+        print(f"verified_runs={summary['verified']}/{summary['run_count']}")
+        print(f"pass_at_1={summary['pass_at_1']:.6f}")
+        if summary["pass_at_3"] is not None:
+            print(f"pass_at_3={summary['pass_at_3']:.6f}")
         print(f"summary={args.run_dir.resolve() / 'summary.md'}")
         return
     if args.command == "memory-learn":
