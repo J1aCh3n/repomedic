@@ -60,6 +60,19 @@ class CliTests(unittest.TestCase):
         self.assertEqual(search.exclude_case, "order_service_001")
         self.assertEqual(search.limit, 2)
 
+        compare = _parser().parse_args(
+            [
+                "compare-memory",
+                "runs/baseline",
+                "runs/treatment",
+                "--output-dir",
+                "runs/comparison",
+            ]
+        )
+        self.assertEqual(compare.baseline_run, Path("runs/baseline"))
+        self.assertEqual(compare.memory_run, Path("runs/treatment"))
+        self.assertEqual(compare.output_dir, Path("runs/comparison"))
+
 
 if __name__ == "__main__":
     unittest.main()

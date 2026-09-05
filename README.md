@@ -453,11 +453,12 @@ repomedic start-benchmark benchmarks/suites/initial_8.yaml `
 
 The preserved v1 staged result verified 6/8 cases and is documented in
 [`benchmarks/results/initial_8_20260905.md`](benchmarks/results/initial_8_20260905.md).
-The current `agent-graph-v2` / `multi-agent-review-v2` implementation prevents
+The preserved smoke results use `agent-graph-v2` / `multi-agent-review-v2` and
+must remain separate from later protocols. The graph prevents
 Reviewer revisions outside the manifest edit allowlist, records failed model
 and tool attempts, validates that tool budgets cover the declared direct repair
-path, and aligns hidden assertions with the manifest contract. These are
-protocol changes, so future v2 results must not be merged with the v1 rate.
+path, and aligns hidden assertions with the manifest contract. Protocol changes
+must not be merged into one success rate.
 
 ## Twelve-case benchmark dataset
 
@@ -477,3 +478,70 @@ Start a live run with the same frozen model settings used by earlier stages:
 repomedic start-benchmark benchmarks/suites/initial_12.yaml `
   --model gpt-5.6-terra --reasoning-effort low
 ```
+
+## Phase 6 episodic memory
+
+RepoMedic now has an opt-in SQLite episodic memory store. A memory entry can be
+created only from a run whose artifacts prove all of the following: the human
+approved the patch, public and evaluator tests passed, the path policy passed,
+and the final status is `verified`. Stored lessons contain sanitized issue,
+root-cause, repair-summary, changed-path, and evidence-path fields plus fixture,
+case, and run provenance. Evaluator source and test output are not stored.
+
+Memory retrieval is deterministic lexical ranking with a same-fixture bonus.
+The current case is excluded. At most `--memory-limit` lessons are supplied to
+the Planner as untrusted hypotheses; repository evidence must still be gathered
+for the current run. Python/LangGraph continues to own routing, budgets,
+approval, testing, and the write gate.
+
+Import a prior verified Agent run and inspect retrieval without calling a model:
+
+```powershell
+repomedic memory-learn runs/PREVIOUS_CASE/RUN_ID `
+  --memory-db runs/memory/episodic.sqlite
+repomedic memory-search "boundary comparison failure" `
+  --memory-db runs/memory/episodic.sqlite --fixture order_service
+```
+
+Enable memory for one run or benchmark with an explicit database:
+
+```powershell
+repomedic run-agent benchmarks/cases/order_service_002 `
+  --model gpt-5.6-terra --reasoning-effort low `
+  --memory-db runs/memory/episodic.sqlite
+```
+
+Every run writes `memory.json`, including retrieved entry provenance and the
+entry written after successful verification. The database path and retrieval
+IDs are frozen in `config.json`, so approval through either CLI or web UI uses
+the same memory configuration after restart. Runs created under an older prompt
+version are rejected on resume rather than silently changing behavior.
+
+The memory uplift gate requires paired, complete benchmark runs. Seed the memory
+database only from prior development runs, then run the same suite once without
+memory and once with memory using identical model and reasoning settings:
+
+```powershell
+repomedic start-benchmark benchmarks/suites/order_service_4.yaml `
+  --model gpt-5.6-terra --reasoning-effort low --run-id no-memory
+repomedic start-benchmark benchmarks/suites/order_service_4.yaml `
+  --model gpt-5.6-terra --reasoning-effort low --run-id with-memory `
+  --memory-db runs/memory/episodic.sqlite
+```
+
+After reviewing and deciding every case in both runs, generate the two benchmark
+summaries and the matched comparison:
+
+```powershell
+repomedic benchmark-status runs/benchmarks/order_service_4/no-memory
+repomedic benchmark-status runs/benchmarks/order_service_4/with-memory
+repomedic compare-memory runs/benchmarks/order_service_4/no-memory `
+  runs/benchmarks/order_service_4/with-memory `
+  --output-dir runs/memory-ablation/order-service-v1
+```
+
+`compare-memory` refuses incomplete or unmatched runs, a baseline with memory
+enabled, a treatment with memory disabled, missing provenance, same-case memory,
+or a treatment that retrieved no entries. It derives verified-rate and usage
+deltas from saved artifacts. The infrastructure is implemented; no memory
+uplift is claimed until this paired live-model experiment is completed.

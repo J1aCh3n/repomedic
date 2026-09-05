@@ -10,6 +10,7 @@ from repomedic.benchmark import load_suite
 from repomedic.benchmark_run import start_benchmark, summarize_benchmark
 from repomedic.harness import DeterministicHarness
 from repomedic.memory import EpisodicMemoryStore
+from repomedic.memory_ablation import compare_memory_ablation
 from repomedic.model_clients import OpenAIResponsesModel, ScriptedModel
 from repomedic.prompts import PROMPT_VERSION
 from repomedic.sandbox import DEFAULT_DOCKER_IMAGE, DockerSandbox
@@ -105,6 +106,13 @@ def _parser() -> ArgumentParser:
     memory_search.add_argument("--fixture")
     memory_search.add_argument("--exclude-case")
     memory_search.add_argument("--limit", type=int, default=3)
+
+    compare_memory = subparsers.add_parser(
+        "compare-memory", help="compare complete no-memory and memory benchmark runs"
+    )
+    compare_memory.add_argument("baseline_run", type=Path)
+    compare_memory.add_argument("memory_run", type=Path)
+    compare_memory.add_argument("--output-dir", type=Path, required=True)
     return parser
 
 
@@ -331,6 +339,18 @@ def main() -> None:
                 ensure_ascii=False,
             )
         )
+        return
+    if args.command == "compare-memory":
+        report = compare_memory_ablation(
+            args.baseline_run,
+            args.memory_run,
+            args.output_dir,
+        )
+        print(
+            f"verified={report['baseline']['verified']}->"
+            f"{report['memory_treatment']['verified']}"
+        )
+        print(f"summary={args.output_dir.resolve() / 'summary.md'}")
         return
 
 
