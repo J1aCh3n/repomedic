@@ -80,6 +80,7 @@ class AgentRunResult:
     proposal: dict[str, Any] | None
     proposal_diff: str | None
     error: str | None
+    usage: dict[str, int] | None = None
 
 
 def _thread_config(run_id: str) -> dict[str, dict[str, str]]:
@@ -664,4 +665,10 @@ class AgentGraphRunner:
             proposal=state.get("proposal"),
             proposal_diff=state.get("proposal_diff"),
             error=state.get("error") or None,
+            usage={
+                "model_calls": state["model_calls"],
+                "tool_calls": state["tool_calls"],
+                "repair_iterations": state["iterations"],
+                **state["usage"],
+            },
         )

@@ -144,7 +144,7 @@ def summarize_benchmark(run_dir: Path) -> dict[str, Any]:
         usage = (
             json.loads(usage_path.read_text(encoding="utf-8"))
             if usage_path.is_file()
-            else {}
+            else result.usage or {}
         )
         for field in usage_totals:
             value = usage.get(field, 0)

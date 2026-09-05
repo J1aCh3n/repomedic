@@ -120,6 +120,7 @@ class AgentGraphTests(unittest.TestCase):
             )
             self.assertTrue(paused.awaiting_approval)
             self.assertIn("subtotal >=", paused.proposal_diff or "")
+            self.assertEqual((paused.usage or {})["model_calls"], 4)
 
             result = runner.resume(
                 "graph_run", ApprovalDecision(action="approve", feedback="")

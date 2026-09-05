@@ -43,6 +43,67 @@ class BenchmarkRunTests(unittest.TestCase):
             for result in started.case_results:
                 self.assertTrue(Path(result.run_dir, "checkpoint.sqlite").is_file())
 
+    def test_aggregates_checkpoint_usage_while_awaiting_approval(self) -> None:
+        suite = load_suite(SUITE_PATH, case_ids=("order_service_001",))
+        model = ScriptedModel(
+            {
+                "planner": [
+                    {
+                        "acceptance_criteria": ["The threshold is inclusive."],
+                        "investigation_tasks": ["Inspect pricing."],
+                        "candidate_paths": ["order_service/pricing.py"],
+                        "repair_steps": ["Use an inclusive comparison."],
+                    }
+                ],
+                "investigator_select": [
+                    {
+                        "searches": ["BULK_DISCOUNT_THRESHOLD"],
+                        "reads": ["order_service/pricing.py"],
+                    }
+                ],
+                "investigator": [
+                    {
+                        "root_cause": "The comparison is strict.",
+                        "evidence": [
+                            {
+                                "path": "order_service/pricing.py",
+                                "line_start": 13,
+                                "line_end": 13,
+                                "excerpt": "subtotal > BULK_DISCOUNT_THRESHOLD",
+                            }
+                        ],
+                        "relevant_files": ["order_service/pricing.py"],
+                    }
+                ],
+                "coder": [
+                    {
+                        "summary": "Make the threshold inclusive.",
+                        "edits": [
+                            {
+                                "path": "order_service/pricing.py",
+                                "old": "subtotal > BULK_DISCOUNT_THRESHOLD",
+                                "new": "subtotal >= BULK_DISCOUNT_THRESHOLD",
+                                "rationale": "Include exactly 100.00.",
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+        with temporary_directory() as temp_dir:
+            started = start_benchmark(
+                suite,
+                model=model,
+                harness=DeterministicHarness(sandbox=UnusedSandbox()),
+                runs_root=Path(temp_dir),
+                run_id="benchmark_run",
+            )
+            summary = summarize_benchmark(started.run_dir)
+
+            self.assertEqual(summary["status_counts"], {"awaiting_approval": 1})
+            self.assertEqual(summary["usage"]["model_calls"], 4)
+            self.assertEqual(summary["cases"][0]["usage"]["calls"], 4)
+
 
 if __name__ == "__main__":
     unittest.main()
