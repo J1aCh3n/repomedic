@@ -1,0 +1,12 @@
+diff --git a/document_pipeline/pipeline.py b/document_pipeline/pipeline.py
+--- a/document_pipeline/pipeline.py
++++ b/document_pipeline/pipeline.py
+@@ -11,8 +11,6 @@ def process(
+     *,
+     uppercase_title: bool = False,
+ ) -> str:
+-    destination.parent.mkdir(parents=True, exist_ok=True)
+-    destination.write_text("", encoding="utf-8")
+     document = load_document(source)
+     transformed = transform_document(document, uppercase_title=uppercase_title)
+     rendered = render_markdown(transformed)
