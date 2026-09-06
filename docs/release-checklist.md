@@ -24,16 +24,13 @@ Local verification date: 2026-09-05. Hosted CI verification date: 2026-09-06.
 
 - The repository is published at
   [`J1aCh3n/repomedic`](https://github.com/J1aCh3n/repomedic).
-- Hosted [`CI #1`](https://github.com/J1aCh3n/repomedic/actions/runs/34038257997)
-  passed on commit `69f2d9d`: all four Windows/Linux and Python 3.11/3.12 test
+- Hosted [`CI #13`](https://github.com/J1aCh3n/repomedic/actions/runs/34038698435)
+  passed on commit `6e05057`: all four Windows/Linux and Python 3.11/3.12 test
   jobs, distribution building, and dependency auditing completed successfully.
-- `.github/workflows/release.yml` provides opt-in delivery: pushing a tag that
-  exactly matches `v<project.version>` reruns deterministic checks, builds the
-  wheel and source distribution, and creates a GitHub Release using the
-  repository-scoped `GITHUB_TOKEN`.
-- No PyPI publishing is configured. No release has been published by this
-  workflow yet; creating and pushing a version tag remains an explicit
-  maintainer action.
+- The repository intentionally has no CD, automatic GitHub Release, or PyPI
+  publishing workflow. CI builds the distributions as validation artifacts;
+  versioned delivery can be added later if the project becomes a supported
+  tool rather than an experimental learning implementation.
 
 ## Claim boundary
 
