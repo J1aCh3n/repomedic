@@ -16,12 +16,15 @@ from repomedic.changes import (
     SafetyError, ScanLimits, changed_paths, normalize_path, protected_path,
     resolve_within, run_path, scan_tree,
 )
-from repomedic.sandbox import DockerSandbox
+from repomedic.sandbox import CommandResult, DockerSandbox
 from repomedic.task import CommandSpec, Contract
 
 
 class ToolDenied(ValueError):
     """A recoverable tool request is outside its declared scope or invalid."""
+
+
+MAX_MODEL_OBSERVATION_CHARS = 8000
 
 
 class ScopePlan(Contract):
@@ -41,7 +44,7 @@ def validate_scope(paths: list[str]) -> list[str]:
     return normalized
 
 
-def truncate_output(value: str, limit: int = 8000) -> str:
+def truncate_output(value: str, limit: int = MAX_MODEL_OBSERVATION_CHARS) -> str:
     if len(value) <= limit:
         return value
     marker = "\n... [output truncated; bounded full observation saved] ...\n"
@@ -179,5 +182,22 @@ def _command_observation(state: dict[str, Any], call_id: str, name: str,
     writer = ArtifactWriter(Path(state["run_dir"]))
     writer.append_trace("command_completed", {"tool": name, **result})
     return Command(update={"last_command": result,
-                           "messages": [ToolMessage(content=json.dumps(result),
+                           "messages": [ToolMessage(content=_format_command_result(CommandResult.model_validate(result)),
                                                      tool_call_id=call_id, name=name)]})
+
+
+def _format_command_result(result: CommandResult) -> str:
+    prefix = (f"exit_code: {result.exit_code if result.exit_code is not None else 'unavailable'}\n"
+              f"timed_out: {str(result.timed_out).lower()}\n"
+              f"output_limited: {str(result.output_limited).lower()}\n"
+              f"infrastructure_error: {str(result.infrastructure_error).lower()}\n"
+              f"duration_ms: {result.duration_ms}\n"
+              "--- stdout ---\n")
+    separator = "\n--- stderr ---\n"
+    available = MAX_MODEL_OBSERVATION_CHARS - len(prefix) - len(separator)
+    # Share the budget between streams, returning unused space to the larger one.
+    stdout_limit = min(len(result.stdout), available // 2)
+    stderr_limit = min(len(result.stderr), available - stdout_limit)
+    stdout_limit = available - stderr_limit
+    return (prefix + truncate_output(result.stdout, stdout_limit)
+            + separator + truncate_output(result.stderr, stderr_limit))

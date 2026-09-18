@@ -272,6 +272,8 @@ class GraphTests(unittest.TestCase):
                     self.assertEqual(result.status, "awaiting_review")
                 self.assertIn("def f(token: str):", model.calls[-1][-1].content)
                 self.assertIn("dummy-secret", model.calls[-1][-1].content)
+                if name == "bash":
+                    self.assertIn("--- stdout ---\n" + code, model.calls[-1][-1].content)
                 self.assertNotIn("dummy-secret", (run / "observations/0001.txt").read_text())
                 self.assertNotIn("dummy-secret", (run / "trace.jsonl").read_text())
 

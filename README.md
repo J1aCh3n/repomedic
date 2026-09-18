@@ -175,8 +175,11 @@ evaluator mounts are read-only.
 
 Command stdout/stderr are captured concurrently with a combined 1 MiB cap;
 output overflow terminates the command. Observations exposed to the model keep
-approximately 8,000 characters from the head and tail. Bounded observations,
-sanitized commands/results, scope history, transitions, token usage and latency
+approximately 8,000 characters from the head and tail.
+For `bash` and `run_tests`, model responses use plain-text status fields and
+separate stdout/stderr sections with real newlines. Each stream is truncated
+independently to preserve its head and tail within the combined character limit.
+Bounded observations, sanitized commands/results, scope history, transitions, token usage and latency
 are saved in `observations/`, `trace.jsonl`, `test-results.json`, `usage.json`,
 and `result.json`. Public artifacts omit private reasoning; checkpoints retain
 opaque encrypted reasoning required for stateless API history.
@@ -208,3 +211,5 @@ available at commit `9154e8ce8ac32a871b339f6be5168f4ec4f3710b`.
 The current local validation record is in [docs/validation-v3.md](docs/validation-v3.md).
 That record covers initial commit `da7d9d5`; follow-up fixes are recorded in
 [docs/validation-v3-fixes.md](docs/validation-v3-fixes.md).
+Plain-text command output validation is recorded in
+[docs/validation-command-output.md](docs/validation-command-output.md).
