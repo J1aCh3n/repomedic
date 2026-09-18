@@ -1,5 +1,9 @@
 # Security review: 2026-09-05
 
+> Historical review of the workflow implementation at commit
+> `9154e8ce8ac32a871b339f6be5168f4ec4f3710b`. It does not establish the security
+> properties or verification status of the v3 tool loop. See current SECURITY.md.
+
 ## Scope and threat model
 
 This review covers RepoMedic's local single-user execution path: untrusted

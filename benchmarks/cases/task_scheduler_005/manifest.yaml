@@ -17,18 +17,6 @@ tests:
   evaluator:
     argv: [python, -m, unittest, discover, -s, hidden_tests, -v]
     cwd: evaluator
-paths:
-  allowed:
-    - task_scheduler/policies.py
-  forbidden:
-    - .git
-    - .env
-    - tests
-    - evaluator
-limits:
-  wall_time_seconds: 60
-  tool_calls: 43
-  repair_iterations: 2
 expected_behavior:
   - A task may start at the exact instant another task ends.
   - A task may end at the exact instant another task starts.

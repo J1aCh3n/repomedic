@@ -1,7 +1,6 @@
-"""Validate a benchmark suite's clean, faulty, and reference-repaired states."""
+"""Docker fixture gate: clean inputs, injected failures, and maintainer reference repairs."""
 
 from argparse import ArgumentParser
-from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 import os
@@ -9,155 +8,61 @@ import subprocess
 import uuid
 
 from repomedic.artifacts import ArtifactWriter
-from repomedic.benchmark import load_suite
-from repomedic.harness import DeterministicHarness
-
-
-def _run_id() -> str:
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    return f"{timestamp}-{uuid.uuid4().hex[:8]}"
-
-
-def _report(summary: dict[str, object]) -> str:
-    lines = [
-        f"# Fixture gate: {summary['suite_id']}",
-        "",
-        f"- Status: `{summary['status']}`",
-        f"- Cases: `{summary['case_count']}`",
-        f"- Clean fixtures verified: `{summary['clean_fixtures_verified']}`",
-        f"- Faults reproduced: `{summary['faults_reproduced']}`",
-        f"- Reference repairs verified: `{summary['references_verified']}`",
-        "",
-        "## Cases",
-        "",
-    ]
-    for case in summary["cases"]:
-        lines.append(
-            f"- `{case['case_id']}` ({case['category']}): faulty "
-            f"`{case['faulty_status']}`, reference `{case['reference_status']}`"
-        )
-    lines.append("")
-    return "\n".join(lines)
+from repomedic.changes import run_path
+from repomedic.graph import RunResult, prepare_run
+from repomedic.grader import grade_run
+from repomedic.sandbox import DockerSandbox
+from repomedic.task import load_taskset
 
 
 def main() -> None:
     parser = ArgumentParser(description=__doc__)
-    parser.add_argument("suite", type=Path)
-    parser.add_argument(
-        "--runs-root", type=Path, default=Path("runs") / "suite-gates"
-    )
-    parser.add_argument("--run-id")
+    parser.add_argument("taskset", type=Path)
+    parser.add_argument("--runs-root", type=Path, default=Path("runs/fixture-gates"))
     args = parser.parse_args()
-
-    suite = load_suite(args.suite)
-    gate_dir = (
-        args.runs_root.resolve() / suite.suite_id / (args.run_id or _run_id())
-    )
-    gate_dir.mkdir(parents=True, exist_ok=False)
-    harness = DeterministicHarness()
-    rows: list[dict[str, object]] = []
-    fixtures: dict[str, dict[str, object]] = {}
-
-    benchmark_root = suite.suite_path.parent.parent
-    for case in suite.cases:
-        fixture_id = case.manifest.fixture.fixture_id
-        if fixture_id in fixtures:
-            continue
-        fixture_dir = benchmark_root / "fixtures" / fixture_id
-        result = harness.sandbox.run(
-            case_id=f"{fixture_id}_clean",
-            run_id=gate_dir.name,
-            workspace=fixture_dir,
-            evaluator_dir=None,
-            spec=case.manifest.public_test,
-            kind="public",
-            timeout_seconds=case.manifest.limits.wall_time_seconds,
-        )
-        fixtures[fixture_id] = asdict(result)
-
-    for case in suite.cases:
-        faulty = harness.run_case(
-            case.case_dir,
-            gate_dir / "faulty",
-            run_id="input",
-        )
-        repaired = harness.prepare_case(
-            case.case_dir,
-            gate_dir / "reference",
-            run_id="repair",
-        )
-        patch_path = case.case_dir / "evaluator" / "reference.patch"
-        git_environment = {
-            name: os.environ[name]
-            for name in ("PATH", "SYSTEMROOT", "TEMP", "TMP", "TMPDIR")
-            if name in os.environ
-        }
-        git_environment["GIT_CEILING_DIRECTORIES"] = str(
-            repaired.layout.workspace.parent.resolve()
-        )
-        applied = subprocess.run(
-            ["git", "apply", str(patch_path.resolve())],
-            cwd=repaired.layout.workspace,
-            env=git_environment,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
-        if applied.returncode != 0:
-            raise RuntimeError(
-                f"reference patch failed for {case.case_id}: {applied.stderr}"
-            )
-        reference = harness.evaluate(repaired)
-        rows.append(
-            {
-                "case_id": case.case_id,
-                "category": case.manifest.category,
-                "faulty_status": faulty.status,
-                "reference_status": reference.status,
-                "faulty_run_dir": faulty.run_dir,
-                "reference_run_dir": reference.run_dir,
-            }
-        )
-
-    faults_reproduced = sum(row["faulty_status"] == "tests_failed" for row in rows)
-    references_verified = sum(row["reference_status"] == "verified" for row in rows)
-    clean_fixtures_verified = sum(
-        result["exit_code"] == 0
-        and not result["timed_out"]
-        and not result["infrastructure_error"]
-        for result in fixtures.values()
-    )
-    status = (
-        "verified"
-        if clean_fixtures_verified == len(fixtures)
-        and faults_reproduced == len(rows)
-        and references_verified == len(rows)
-        else "failed"
-    )
-    summary: dict[str, object] = {
-        "suite_id": suite.suite_id,
-        "suite_path": str(suite.suite_path),
-        "split": suite.split,
-        "status": status,
-        "case_count": len(rows),
-        "clean_fixtures_verified": clean_fixtures_verified,
-        "fixtures": fixtures,
-        "faults_reproduced": faults_reproduced,
-        "references_verified": references_verified,
-        "cases": rows,
-        "sandbox": {
-            "backend": harness.sandbox.backend,
-            "image": harness.sandbox.image,
-        },
-    }
-    writer = ArtifactWriter(gate_dir)
-    writer.write_json("summary.json", summary)
-    writer.write_text("summary.md", _report(summary))
-    print(f"status={status}")
-    print(f"run_dir={gate_dir}")
-    raise SystemExit(0 if status == "verified" else 1)
+    taskset = load_taskset(args.taskset)
+    args.runs_root.mkdir(parents=True, exist_ok=True)
+    identity = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
+    gate = run_path(args.runs_root.resolve(), identity)
+    gate.mkdir()
+    sandbox = DockerSandbox()
+    fixtures = {}
+    rows = []
+    benchmark_root = taskset.source.parent.parent
+    for task in taskset.tasks:
+        if task.fixture and task.fixture.id not in fixtures:
+            clean_task = task.model_copy(update={"case_id": task.fixture.id + "_clean",
+                                                 "repo": benchmark_root / "fixtures" / task.fixture.id})
+            clean = prepare_run(clean_task, gate / "clean", mode="eval")
+            fixtures[task.fixture.id] = sandbox.run_tests(clean, task.public_test, 60).model_dump(mode="json")
+        faulty = prepare_run(task, gate / "faulty", mode="eval")
+        result = RunResult(run_id=faulty.name, run_dir=str(faulty), case_id=task.case_id,
+                           status="ready_for_grade", usage={})
+        faulty_score = grade_run(task, result, sandbox)
+        repaired = prepare_run(task, gate / "reference", mode="eval")
+        workspace = run_path(repaired, "workspace")
+        environment = {name: os.environ[name] for name in ("PATH", "SYSTEMROOT", "TEMP", "TMP") if name in os.environ}
+        environment["GIT_CEILING_DIRECTORIES"] = str(workspace.parent.resolve())
+        applied = subprocess.run(["git", "apply", str((task.evaluator / "reference.patch").resolve())],
+                                  cwd=workspace, env=environment, capture_output=True,
+                                  text=True, encoding="utf-8", errors="replace", check=False, timeout=30)
+        if applied.returncode:
+            raise RuntimeError(f"reference patch failed for {task.case_id}: {applied.stderr}")
+        repaired_score = grade_run(task, result.model_copy(update={"run_id": repaired.name, "run_dir": str(repaired)}), sandbox)
+        rows.append({"case_id": task.case_id, "faulty_status": faulty_score["status"],
+                     "reference_status": repaired_score["status"],
+                     "faulty_run": str(faulty), "reference_run": str(repaired)})
+        print(f"{task.case_id}: faulty={faulty_score['status']} reference={repaired_score['status']}", flush=True)
+        ArtifactWriter(gate).write_json("progress.json", {"cases": rows, "fixtures": fixtures})
+    passed = (all(result["exit_code"] == 0 and not result["infrastructure_error"] for result in fixtures.values())
+              and all(row["faulty_status"] == "tests_failed" and row["reference_status"] == "verified" for row in rows))
+    summary = {"status": "verified" if passed else "failed", "suite_id": taskset.suite_id,
+               "split": taskset.split, "case_count": len(rows), "fixtures": fixtures, "cases": rows,
+               "sandbox": {"image": sandbox.image, "network": "none"}}
+    ArtifactWriter(gate).write_json("summary.json", summary)
+    print(f"status={summary['status']}")
+    print(f"run_dir={gate}")
+    raise SystemExit(0 if passed else 1)
 
 
 if __name__ == "__main__":

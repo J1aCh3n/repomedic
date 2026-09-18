@@ -1,60 +1,38 @@
-# Contributing to RepoMedic
+# Contributing
 
-RepoMedic is an experimental learning project. Contributions should preserve
-its deterministic safety boundaries and the distinction between infrastructure
-evidence and live-model performance.
+Keep scope, model tool decisions and deterministic harness responsibilities
+separate. Preserve evaluator isolation, recorded failures and exact approval
+semantics. Read README.md, AGENTS.md and SECURITY.md before changing behavior.
 
-## Development setup
-
-Python 3.11 or 3.12 is supported. From the repository root:
+Use Python 3.11 or 3.12 and a project-local virtual environment:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
 python -m pip install -e .
 python -m unittest discover -s tests -v
-```
-
-On POSIX shells, activate the environment with `source .venv/bin/activate`.
-The default test suite is deterministic and must not require Docker, a network
-connection, or an API key.
-
-## Change requirements
-
-- Keep orchestration, budgets, approval, path policy, and test execution in
-  deterministic Python code.
-- Treat issues, repository contents, model output, and tool output as untrusted.
-- Add the lowest-level regression test that proves a behavior change.
-- Do not expose evaluator-only files to an Agent or alter tests to make a faulty
-  implementation pass.
-- Do not add live-model calls to the default test suite or CI.
-- Preserve failed benchmark runs and generate aggregate metrics from artifacts.
-- Keep changes scoped; avoid unrelated refactors.
-
-Before submitting a change, run:
-
-```powershell
-python -m unittest discover -s tests -v
 python -m compileall -q repomedic tests scripts
+python -m repomedic --help
 git diff --check
 ```
 
-Docker-backed fixture and graph gates are maintainer checks. Run the relevant
-gate when changing sandboxing, fixtures, evaluation, or graph behavior:
+Default tests need no API key, network or Docker. Mock provider calls at the
+transport boundary. Scripted-model tests establish orchestration correctness,
+not repair ability. Do not add live calls to default tests or CI.
+
+For copying, sandbox, graph or grading changes, run these explicit Docker gates:
 
 ```powershell
-python -m scripts.validate_phase3
-python -m scripts.validate_phase4
-python -m scripts.validate_suite benchmarks/suites/preflight_6.yaml
+python -m scripts.validate_tool_loop
+python -m scripts.validate_suite benchmarks/suites/initial_12.yaml
 ```
 
-Never commit API keys, environment files, generated run directories, SQLite
-state, or private holdout cases.
+The pinned image must already be installed; repair commands never pull images.
+Gates save evidence under ignored `runs/` directories. Do not commit credentials,
+generated workspaces, SQLite files or private holdouts. Historical reports refer
+to the pre-refactor commit and must not be relabeled as tool-loop measurements.
 
-## Reporting results
-
-State exactly what was measured: suite, case count, attempts, model, prompt,
-protocol, approval method, and known limitations. Public fixtures are
-development cases, not secret holdouts. A fixture gate or scripted-model run
-does not establish live-model repair quality.
+Add the lowest sufficient regression test. Do not scaffold future multi-agent
+subgraphs, journals, web UI, memory or provider abstractions without a current
+authorized requirement. Completed, verified changes get one scoped local commit;
+pushing or publishing requires an explicit request.

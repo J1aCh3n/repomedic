@@ -1,201 +1,185 @@
+"""Network-disabled Docker operations with bounded host-side output capture."""
+
 from pathlib import Path
+from threading import Event, Lock, Thread
 import re
 import subprocess
 import time
+import uuid
 
-from repomedic.models import CommandSpec, TestResult
-from repomedic.workspace import is_link_or_junction
+from pydantic import Field
 
-
-class SandboxError(ValueError):
-    """Raised when a sandbox command violates a fixed execution contract."""
+from repomedic.changes import run_path
+from repomedic.task import CommandSpec, Contract
 
 
 DEFAULT_DOCKER_IMAGE = (
     "python:3.11-slim@sha256:9534e5a8e315485d4061ed659af0fd78a284c015f9b73661b41d6bab25604534"
 )
+MAX_OUTPUT_BYTES = 1_048_576
+
+
+class SandboxError(ValueError):
+    """Docker configuration violates the execution boundary."""
+
+
+class CommandResult(Contract):
+    kind: str
+    argv: tuple[str, ...]
+    exit_code: int | None = None
+    timed_out: bool = False
+    output_limited: bool = False
+    infrastructure_error: bool = False
+    duration_ms: int = Field(default=0, ge=0)
+    stdout: str = ""
+    stderr: str = ""
+
+    @property
+    def passed(self) -> bool:
+        return (self.exit_code == 0 and not self.timed_out
+                and not self.output_limited and not self.infrastructure_error)
+
+
+def capture_process(argv: list[str], timeout: float,
+                    max_output_bytes: int = MAX_OUTPUT_BYTES) -> CommandResult:
+    """Drain both pipes concurrently; exceeding the combined cap kills the process."""
+    started = time.monotonic()
+    try:
+        process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except FileNotFoundError:
+        return CommandResult(kind="command", argv=tuple(argv), infrastructure_error=True,
+                             stderr="Docker executable was not found")
+    buffers: dict[str, list[bytes]] = {"stdout": [], "stderr": []}
+    limited, lock = Event(), Lock()
+    captured = 0
+
+    def read_pipe(name: str) -> None:
+        nonlocal captured
+        pipe = getattr(process, name)
+        assert pipe is not None
+        try:
+            while chunk := pipe.read(8192):
+                with lock:
+                    remaining = max_output_bytes - captured
+                    buffers[name].append(chunk[:remaining])
+                    captured += min(len(chunk), remaining)
+                    if len(chunk) > remaining:
+                        limited.set()
+                if limited.is_set():
+                    break
+        finally:
+            pipe.close()
+
+    readers = [Thread(target=read_pipe, args=(name,), daemon=True) for name in buffers]
+    for reader in readers:
+        reader.start()
+    deadline = started + timeout
+    timed_out = False
+    while process.poll() is None:
+        if limited.is_set():
+            process.kill()
+            break
+        if time.monotonic() >= deadline:
+            timed_out = True
+            process.kill()
+            break
+        limited.wait(0.02)
+    process.wait()
+    for reader in readers:
+        reader.join(timeout=2)
+    return CommandResult(
+        kind="command", argv=tuple(argv), exit_code=process.returncode,
+        timed_out=timed_out, output_limited=limited.is_set(),
+        duration_ms=round((time.monotonic() - started) * 1000),
+        stdout=b"".join(buffers["stdout"]).decode("utf-8", errors="replace"),
+        stderr=b"".join(buffers["stderr"]).decode("utf-8", errors="replace"),
+        infrastructure_error=process.returncode in {125, 126, 127},
+    )
 
 
 class DockerSandbox:
     backend = "docker"
 
-    def __init__(
-        self,
-        image: str = DEFAULT_DOCKER_IMAGE,
-        docker_executable: str = "docker",
-    ) -> None:
-        if (
-            not image
-            or image.startswith("-")
-            or len(image) > 512
-            or any(character.isspace() or character == "\x00" for character in image)
-        ):
-            raise SandboxError("unsafe Docker image reference")
-        self.image = image
-        self.docker_executable = docker_executable
+    def __init__(self, image: str = DEFAULT_DOCKER_IMAGE,
+                 docker_executable: str = "docker") -> None:
+        if (not image or image.startswith("-") or len(image) > 512
+                or any(c.isspace() or c == "\x00" for c in image)
+                or not re.search(r"@sha256:[0-9a-f]{64}$", image)):
+            raise SandboxError("Docker image must be a safe, digest-pinned reference")
+        self.image, self.docker_executable = image, docker_executable
 
     @staticmethod
     def _mount(source: Path, target: str, *, readonly: bool) -> str:
-        if not source.is_dir():
-            raise SandboxError(f"Docker bind source is not a directory: {source}")
-        if is_link_or_junction(source):
-            raise SandboxError(f"Docker bind source may not be a link: {source}")
-        resolved = str(source.resolve())
-        if "," in resolved:
-            raise SandboxError("Docker bind source paths may not contain commas")
-        value = f"type=bind,source={resolved},target={target}"
-        return f"{value},readonly" if readonly else value
+        checked = run_path(source.parent, source.name)
+        if not checked.is_dir() or "," in str(checked.resolve()):
+            raise SandboxError("invalid bind mount directory")
+        value = f"type=bind,source={checked.resolve()},target={target}"
+        return value + (",readonly" if readonly else "")
 
-    def build_command(
-        self,
-        *,
-        container_name: str,
-        workspace: Path,
-        evaluator_dir: Path | None,
-        spec: CommandSpec,
-        kind: str,
-    ) -> list[str]:
+    def build_command(self, *, container_name: str, run_dir: Path,
+                      argv: tuple[str, ...], kind: str = "command",
+                      workspace_name: str = "workspace", readonly: bool = False,
+                      evaluator_dir: Path | None = None) -> list[str]:
         if not re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,62}", container_name):
-            raise SandboxError("unsafe Docker container name")
-        if spec.argv[:3] != ("python", "-m", "unittest"):
-            raise SandboxError("only fixed python unittest commands are permitted")
-        if kind not in {"public", "evaluator"}:
-            raise SandboxError(f"unknown test kind: {kind}")
-        if kind == "public" and (spec.cwd != "repo" or evaluator_dir is not None):
-            raise SandboxError("public tests must run from the isolated repository")
-        if kind == "evaluator" and (spec.cwd != "evaluator" or evaluator_dir is None):
-            raise SandboxError("evaluator tests require the isolated evaluator mount")
-
+            raise SandboxError("unsafe container name")
+        if kind not in {"command", "public", "evaluator"}:
+            raise SandboxError("unknown command kind")
+        if evaluator_dir is not None and kind != "evaluator":
+            raise SandboxError("Agent operations must never mount evaluator files")
+        if kind == "evaluator" and (evaluator_dir is None or not readonly):
+            raise SandboxError("grader requires a separate evaluator and read-only workspace")
+        if not argv or any("\x00" in arg for arg in argv):
+            raise SandboxError("invalid command arguments")
+        workspace = run_path(run_dir, workspace_name)
+        scratch = run_path(run_dir, "scratch")
         command = [
-            self.docker_executable,
-            "run",
-            "--rm",
-            "--pull",
-            "never",
-            "--init",
-            "--name",
-            container_name,
-            "--network",
-            "none",
-            "--read-only",
-            "--cap-drop",
-            "ALL",
-            "--security-opt",
-            "no-new-privileges",
-            "--user",
-            "65534:65534",
-            "--pids-limit",
-            "64",
-            "--memory",
-            "256m",
-            "--cpus",
-            "1.0",
-            "--tmpfs",
-            "/tmp:rw,noexec,nosuid,size=64m,mode=1777",
-            "--env",
-            "PYTHONDONTWRITEBYTECODE=1",
-            "--env",
-            "PYTHONHASHSEED=0",
+            self.docker_executable, "run", "--rm", "--pull", "never", "--init",
+            "--name", container_name, "--network", "none", "--read-only",
+            "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+            "--user", "65534:65534", "--pids-limit", "64", "--memory", "256m",
+            "--cpus", "1.0", "--log-driver", "none",
+            "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m,mode=1777",
+            "--env", "PYTHONDONTWRITEBYTECODE=1", "--env", "PYTHONHASHSEED=0",
+            "--mount", self._mount(workspace, "/workspace", readonly=readonly),
+            "--mount", self._mount(scratch, "/scratch", readonly=False),
+            "--workdir", "/evaluator" if kind == "evaluator" else "/workspace",
         ]
-        if kind == "public":
-            command.extend(
-                [
-                    "--mount",
-                    self._mount(workspace, "/workspace", readonly=True),
-                    "--workdir",
-                    "/workspace",
-                ]
-            )
-        else:
-            assert evaluator_dir is not None
-            command.extend(
-                [
-                    "--mount",
-                    self._mount(workspace, "/workspace", readonly=True),
-                    "--mount",
-                    self._mount(evaluator_dir, "/evaluator", readonly=True),
-                    "--workdir",
-                    "/evaluator",
-                    "--env",
-                    "REPOMEDIC_REPO_UNDER_TEST=/workspace",
-                ]
-            )
-        command.extend([self.image, *spec.argv])
-        return command
+        if evaluator_dir is not None:
+            command += ["--mount", self._mount(evaluator_dir, "/evaluator", readonly=True),
+                        "--env", "REPOMEDIC_REPO_UNDER_TEST=/workspace"]
+        return command + [self.image, *argv]
 
-    def run(
-        self,
-        *,
-        case_id: str,
-        run_id: str,
-        workspace: Path,
-        evaluator_dir: Path | None,
-        spec: CommandSpec,
-        kind: str,
-        timeout_seconds: int,
-    ) -> TestResult:
-        container_name = re.sub(
-            r"[^a-z0-9_.-]",
-            "-",
-            f"repomedic-{case_id}-{run_id}-{kind}".lower(),
-        )[:63]
+    def _run(self, *, run_dir: Path, argv: tuple[str, ...], timeout: int,
+             kind: str = "command", workspace_name: str = "workspace",
+             readonly: bool = False, evaluator_dir: Path | None = None) -> CommandResult:
+        name = f"repomedic-{uuid.uuid4().hex}"
         command = self.build_command(
-            container_name=container_name,
-            workspace=workspace,
-            evaluator_dir=evaluator_dir,
-            spec=spec,
-            kind=kind,
+            container_name=name, run_dir=run_dir, argv=argv, kind=kind,
+            workspace_name=workspace_name, readonly=readonly, evaluator_dir=evaluator_dir,
         )
-        started = time.monotonic()
-        try:
-            completed = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout_seconds,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as error:
-            subprocess.run(
-                [self.docker_executable, "rm", "-f", container_name],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            duration_ms = round((time.monotonic() - started) * 1000)
-            return TestResult(
-                kind=kind,
-                argv=spec.argv,
-                exit_code=None,
-                timed_out=True,
-                duration_ms=duration_ms,
-                stdout=error.stdout or "",
-                stderr=error.stderr or "test command timed out",
-                infrastructure_error=True,
-            )
-        except FileNotFoundError as error:
-            duration_ms = round((time.monotonic() - started) * 1000)
-            return TestResult(
-                kind=kind,
-                argv=spec.argv,
-                exit_code=None,
-                timed_out=False,
-                duration_ms=duration_ms,
-                stdout="",
-                stderr=str(error),
-                infrastructure_error=True,
-            )
+        result = capture_process(command, timeout)
+        if result.timed_out or result.output_limited:
+            cleanup = capture_process([self.docker_executable, "rm", "-f", name], 10)
+            if cleanup.exit_code != 0:
+                result = result.model_copy(update={
+                    "infrastructure_error": True,
+                    "stderr": result.stderr + "\nContainer cleanup failed; inspect Docker manually.",
+                })
+        return result.model_copy(update={"kind": kind, "argv": argv})
 
-        duration_ms = round((time.monotonic() - started) * 1000)
-        return TestResult(
-            kind=kind,
-            argv=spec.argv,
-            exit_code=completed.returncode,
-            timed_out=False,
-            duration_ms=duration_ms,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
-            infrastructure_error=completed.returncode in {125, 126, 127},
-        )
+    def exec_command(self, run_dir: Path, command: str, timeout: int) -> CommandResult:
+        if not command.strip() or "\x00" in command:
+            raise SandboxError("command must be non-empty and contain no null bytes")
+        return self._run(run_dir=run_dir, argv=("bash", "-c", command), timeout=timeout)
+
+    def run_tests(self, run_dir: Path, spec: CommandSpec, timeout: int, *,
+                  workspace_name: str = "workspace",
+                  evaluator_dir: Path | None = None) -> CommandResult:
+        if spec.argv[:3] != ("python", "-m", "unittest"):
+            raise SandboxError("tests must use the configured unittest command")
+        if (spec.cwd == "evaluator") != (evaluator_dir is not None):
+            raise SandboxError("test cwd and evaluator mount disagree")
+        return self._run(run_dir=run_dir, argv=spec.argv, timeout=timeout,
+                         kind="evaluator" if evaluator_dir else "public",
+                         workspace_name=workspace_name, readonly=True,
+                         evaluator_dir=evaluator_dir)

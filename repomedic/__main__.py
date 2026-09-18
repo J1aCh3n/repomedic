@@ -1,515 +1,141 @@
-from argparse import ArgumentParser
+"""CLI for fixing disposable repository copies and development evaluation."""
+
+from argparse import ArgumentParser, Namespace
 from pathlib import Path
+from typing import Any
 import json
+import shlex
 
 from langgraph.checkpoint.sqlite import SqliteSaver
+from pydantic import ValidationError
 
-from repomedic.agent_graph import (
-    AGENT_MODES,
-    DEFAULT_AGENT_MODE,
-    AgentGraphRunner,
-    AgentMode,
-    AgentRunResult,
-)
-from repomedic.agent_schemas import ApprovalDecision
-from repomedic.benchmark import load_suite
-from repomedic.benchmark_run import start_benchmark, summarize_benchmark
-from repomedic.configuration_ablation import compare_agent_configurations
-from repomedic.harness import DeterministicHarness
-from repomedic.memory import (
-    DEFAULT_MEMORY_CONTEXT_BUDGET_CHARS,
-    EpisodicMemoryStore,
-    pack_memory_matches,
-    validate_memory_context_budget,
-)
-from repomedic.memory_ablation import compare_memory_ablation
-from repomedic.model_clients import OpenAIResponsesModel, ScriptedModel
-from repomedic.preflight_comparison import compare_preflight_configurations
-from repomedic.prompts import PROMPT_VERSION
-from repomedic.sandbox import DEFAULT_DOCKER_IMAGE, DockerSandbox
-from repomedic.web_ui import serve_control_panel
+from repomedic.artifacts import sanitize
+from repomedic.changes import SafetyError, run_path
+from repomedic.graph import AgentRunner, ApprovalDecision, RunLimits, openai_model, prepare_run
+from repomedic.grader import run_eval
+from repomedic.prompt import PROMPT_VERSION
+from repomedic.sandbox import DEFAULT_DOCKER_IMAGE, DockerSandbox, SandboxError
+from repomedic.task import CommandSpec, Task, load_task, load_taskset
+
+
+def _execution_options(parser: ArgumentParser) -> None:
+    parser.add_argument("--model", required=True, help="Explicit OpenAI model identifier")
+    parser.add_argument("--reasoning-effort", choices=["none", "low", "medium", "high", "xhigh", "max"])
+    parser.add_argument("--image", default=DEFAULT_DOCKER_IMAGE)
+    defaults = RunLimits()
+    for name in RunLimits.model_fields:
+        parser.add_argument("--" + name.replace("_", "-"), type=int, default=getattr(defaults, name))
 
 
 def _parser() -> ArgumentParser:
-    parser = ArgumentParser(description="Run a RepoMedic benchmark case")
-    subparsers = parser.add_subparsers(dest="command", required=True)
-    run_case = subparsers.add_parser("run-case", help="run one case in Docker")
-    run_case.add_argument("case_dir", type=Path)
-    run_case.add_argument("--runs-root", type=Path, default=Path("runs"))
-    run_case.add_argument("--run-id")
-    run_case.add_argument("--docker-image", default=DEFAULT_DOCKER_IMAGE)
-
-    run_agent = subparsers.add_parser(
-        "run-agent", help="start an Agent graph and pause for patch approval"
-    )
-    run_agent.add_argument("case_dir", type=Path)
-    run_agent.add_argument("--runs-root", type=Path, default=Path("runs"))
-    run_agent.add_argument("--run-id")
-    run_agent.add_argument("--model", required=True)
-    run_agent.add_argument(
-        "--reasoning-effort",
-        choices=("none", "low", "medium", "high", "xhigh", "max"),
-    )
-    run_agent.add_argument("--docker-image", default=DEFAULT_DOCKER_IMAGE)
-    run_agent.add_argument("--memory-db", type=Path)
-    run_agent.add_argument("--memory-limit", type=int, default=3)
-    run_agent.add_argument(
-        "--agent-mode", choices=AGENT_MODES, default=DEFAULT_AGENT_MODE
-    )
-    run_agent.add_argument(
-        "--memory-context-budget-chars",
-        type=int,
-        default=DEFAULT_MEMORY_CONTEXT_BUDGET_CHARS,
-    )
-
-    decide = subparsers.add_parser(
-        "decide-agent", help="approve, revise, or reject a paused Agent run"
-    )
+    parser = ArgumentParser(prog="repomedic", description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+    fix = sub.add_parser("fix", help="Repair a copy, check it, then pause for human review")
+    fix.add_argument("repository", type=Path, help="Python repo or development task directory")
+    issue = fix.add_mutually_exclusive_group()
+    issue.add_argument("--issue")
+    issue.add_argument("--issue-file", type=Path)
+    fix.add_argument("--test-command", default="python -m unittest discover -s tests -v")
+    fix.add_argument("--runs-root", type=Path, default=Path("runs/fixes"))
+    _execution_options(fix)
+    decide = sub.add_parser("decide", help="Continue a paused human review")
     decide.add_argument("run_dir", type=Path)
-    decide.add_argument("action", choices=("approve", "revise", "reject"))
+    decide.add_argument("action", choices=["approve", "revise", "reject"])
     decide.add_argument("--feedback", default="")
-    decide.add_argument("--docker-image", default=DEFAULT_DOCKER_IMAGE)
-
-    status = subparsers.add_parser(
-        "agent-status", help="inspect a checkpointed Agent run"
-    )
+    status = sub.add_parser("status", help="Inspect saved state without a model call")
     status.add_argument("run_dir", type=Path)
-
-    serve = subparsers.add_parser(
-        "serve-agent", help="serve the local approval control panel"
-    )
-    serve.add_argument("run_dir", type=Path)
-    serve.add_argument("--docker-image", default=DEFAULT_DOCKER_IMAGE)
-    serve.add_argument("--port", type=int, default=8765)
-
-    start_benchmark_parser = subparsers.add_parser(
-        "start-benchmark", help="start every case in a suite and pause for approval"
-    )
-    start_benchmark_parser.add_argument("suite", type=Path)
-    start_benchmark_parser.add_argument("--model", required=True)
-    start_benchmark_parser.add_argument(
-        "--reasoning-effort",
-        choices=("none", "low", "medium", "high", "xhigh", "max"),
-        default="low",
-    )
-    start_benchmark_parser.add_argument(
-        "--runs-root", type=Path, default=Path("runs") / "benchmarks"
-    )
-    start_benchmark_parser.add_argument(
-        "--case",
-        dest="case_ids",
-        action="append",
-        help="run only this case ID; repeat to select multiple cases",
-    )
-    start_benchmark_parser.add_argument("--run-id")
-    start_benchmark_parser.add_argument(
-        "--resume",
-        action="store_true",
-        help="continue an interrupted benchmark with the same frozen configuration",
-    )
-    start_benchmark_parser.add_argument(
-        "--attempts",
-        type=int,
-        default=1,
-        help="independent attempts per case (1-3)",
-    )
-    start_benchmark_parser.add_argument(
-        "--docker-image", default=DEFAULT_DOCKER_IMAGE
-    )
-    start_benchmark_parser.add_argument("--memory-db", type=Path)
-    start_benchmark_parser.add_argument("--memory-limit", type=int, default=3)
-    start_benchmark_parser.add_argument(
-        "--agent-mode", choices=AGENT_MODES, default=DEFAULT_AGENT_MODE
-    )
-    start_benchmark_parser.add_argument(
-        "--memory-context-budget-chars",
-        type=int,
-        default=DEFAULT_MEMORY_CONTEXT_BUDGET_CHARS,
-    )
-
-    benchmark_status = subparsers.add_parser(
-        "benchmark-status", help="aggregate a checkpointed benchmark run"
-    )
-    benchmark_status.add_argument("run_dir", type=Path)
-
-    memory_learn = subparsers.add_parser(
-        "memory-learn", help="write one verified approved run to episodic memory"
-    )
-    memory_learn.add_argument("run_dir", type=Path)
-    memory_learn.add_argument("--memory-db", type=Path, required=True)
-
-    memory_search = subparsers.add_parser(
-        "memory-search", help="search evidence-gated episodic memory"
-    )
-    memory_search.add_argument("query")
-    memory_search.add_argument("--memory-db", type=Path, required=True)
-    memory_search.add_argument("--fixture")
-    memory_search.add_argument("--exclude-case")
-    memory_search.add_argument("--limit", type=int, default=3)
-    memory_search.add_argument(
-        "--context-budget-chars",
-        type=int,
-        default=DEFAULT_MEMORY_CONTEXT_BUDGET_CHARS,
-    )
-
-    compare_memory = subparsers.add_parser(
-        "compare-memory", help="compare complete no-memory and memory benchmark runs"
-    )
-    compare_memory.add_argument("baseline_run", type=Path)
-    compare_memory.add_argument("memory_run", type=Path)
-    compare_memory.add_argument("--output-dir", type=Path, required=True)
-
-    compare_configurations = subparsers.add_parser(
-        "compare-configurations",
-        help="compare matched single-agent, no-review, and review benchmarks",
-    )
-    compare_configurations.add_argument("single_agent_run", type=Path)
-    compare_configurations.add_argument("no_review_run", type=Path)
-    compare_configurations.add_argument("review_run", type=Path)
-    compare_configurations.add_argument("--output-dir", type=Path, required=True)
-
-    compare_preflight = subparsers.add_parser(
-        "compare-preflight",
-        help="compare all four strict preflight benchmark configurations",
-    )
-    compare_preflight.add_argument("single_agent_run", type=Path)
-    compare_preflight.add_argument("no_review_run", type=Path)
-    compare_preflight.add_argument("review_run", type=Path)
-    compare_preflight.add_argument("memory_run", type=Path)
-    compare_preflight.add_argument("--output-dir", type=Path, required=True)
+    evaluate = sub.add_parser("eval", help="Grade every development task; skip review and never export")
+    evaluate.add_argument("taskset", type=Path)
+    evaluate.add_argument("--runs-root", type=Path, default=Path("runs/evals"))
+    _execution_options(evaluate)
     return parser
 
 
-def _checkpoint_path(run_dir: Path) -> Path:
-    resolved = run_dir.resolve()
-    if not resolved.is_dir():
-        raise ValueError(f"run directory does not exist: {resolved}")
-    checkpoint = resolved / "checkpoint.sqlite"
-    if not checkpoint.is_file():
-        raise ValueError(f"checkpoint does not exist: {checkpoint}")
-    return checkpoint
+def _limits(args: Namespace) -> RunLimits:
+    return RunLimits.model_validate({key: getattr(args, key) for key in RunLimits.model_fields})
 
 
-def _configured_agent(
-    run_dir: Path,
-) -> tuple[str, str | None, Path | None, int, int, bool, AgentMode]:
-    config_path = run_dir.resolve() / "config.json"
+def _config(run_dir: Path) -> dict[str, Any]:
+    path = run_path(run_dir, "config.json")
     try:
-        config = json.loads(config_path.read_text(encoding="utf-8"))
-        model = config["agent_graph"]["model"]
-    except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
-        raise ValueError(
-            f"run has no valid Agent model configuration: {config_path}"
-        ) from error
-    if not isinstance(model, str) or not model.strip():
-        raise ValueError(f"run has no valid Agent model configuration: {config_path}")
-    effort = config["agent_graph"].get("reasoning_effort")
-    if effort is not None and effort not in {
-        "none",
-        "low",
-        "medium",
-        "high",
-        "xhigh",
-        "max",
-    }:
-        raise ValueError(f"run has an invalid reasoning effort: {effort!r}")
-    configured_prompt = config["agent_graph"].get("prompt_version")
-    if configured_prompt != PROMPT_VERSION:
-        raise ValueError(
-            f"run prompt version {configured_prompt!r} cannot resume under "
-            f"{PROMPT_VERSION!r}"
-        )
-    agent_mode = config["agent_graph"].get("mode", DEFAULT_AGENT_MODE)
-    if agent_mode not in AGENT_MODES:
-        raise ValueError(f"run has an invalid agent mode: {agent_mode!r}")
-    memory = config.get("memory", {"enabled": False, "limit": 3})
-    if not isinstance(memory, dict):
-        raise ValueError(f"run has an invalid memory configuration: {config_path}")
-    memory_limit = memory.get("limit", 3)
-    if (
-        not isinstance(memory_limit, int)
-        or isinstance(memory_limit, bool)
-        or not 1 <= memory_limit <= 10
-    ):
-        raise ValueError(f"run has an invalid memory limit: {memory_limit!r}")
-    context_budget_chars = memory.get(
-        "context_budget_chars", DEFAULT_MEMORY_CONTEXT_BUDGET_CHARS
-    )
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("run has no readable configuration") from error
+    if not isinstance(value, dict) or value.get("protocol_version") != "tool-loop-v3":
+        raise ValueError("run uses an incompatible protocol")
+    if value.get("prompt_version") != PROMPT_VERSION:
+        raise ValueError("run uses an incompatible prompt version")
+    if value.get("run_id") != run_dir.name or value.get("mode") not in {"fix", "eval"}:
+        raise ValueError("run identity or mode is invalid")
+    RunLimits.model_validate(value["limits"])
+    if not run_path(run_dir, "checkpoint.sqlite").is_file():
+        raise ValueError("run has no checkpoint")
+    return value
+
+
+def _print(value: Any) -> None:
+    print(json.dumps(sanitize(value), ensure_ascii=False, indent=2))
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _parser()
+    args = parser.parse_args(argv)
     try:
-        validate_memory_context_budget(context_budget_chars)
-    except ValueError as error:
-        raise ValueError(
-            f"run has an invalid memory context budget: {context_budget_chars!r}"
-        ) from error
-    memory_path: Path | None = None
-    if memory.get("enabled") is True:
-        database = memory.get("database")
-        if not isinstance(database, str) or not database.strip():
-            raise ValueError(f"run has no valid memory database: {config_path}")
-        memory_path = Path(database)
-    memory_write_enabled = memory.get("write_enabled", True)
-    if not isinstance(memory_write_enabled, bool):
-        raise ValueError(
-            f"run has an invalid memory write setting: {memory_write_enabled!r}"
-        )
-    return (
-        model,
-        effort,
-        memory_path,
-        memory_limit,
-        context_budget_chars,
-        memory_write_enabled,
-        agent_mode,
-    )
-
-
-def _print_agent_result(result: AgentRunResult) -> None:
-    print(f"status={result.status}")
-    print(f"run_dir={result.run_dir}")
-    if result.awaiting_approval:
-        print(f"approve=repomedic decide-agent \"{result.run_dir}\" approve")
-        print(f"ui=repomedic serve-agent \"{result.run_dir}\"")
-    if result.error:
-        print(f"error={result.error}")
-    if result.memory and result.memory.get("write"):
-        print(f"memory_entry={result.memory['write']['entry_id']}")
-
-
-def _openai_runner(
-    *,
-    model: str,
-    reasoning_effort: str | None,
-    image: str,
-    saver: SqliteSaver,
-    memory_path: Path | None,
-    memory_limit: int,
-    memory_context_budget_chars: int,
-    memory_write_enabled: bool,
-    agent_mode: AgentMode,
-) -> AgentGraphRunner:
-    return AgentGraphRunner(
-        OpenAIResponsesModel(model, reasoning_effort=reasoning_effort),
-        DeterministicHarness(sandbox=DockerSandbox(image=image)),
-        saver,
-        memory_store=EpisodicMemoryStore(memory_path) if memory_path else None,
-        memory_limit=memory_limit,
-        memory_context_budget_chars=memory_context_budget_chars,
-        memory_write_enabled=memory_write_enabled,
-        agent_mode=agent_mode,
-    )
-
-
-def main() -> None:
-    args = _parser().parse_args()
-    if args.command == "run-case":
-        outcome = DeterministicHarness(
-            sandbox=DockerSandbox(image=args.docker_image)
-        ).run_case(args.case_dir, args.runs_root, run_id=args.run_id)
-        print(f"status={outcome.status}")
-        print(f"run_dir={outcome.run_dir}")
-        raise SystemExit(0 if outcome.status == "verified" else 1)
-    if args.command == "run-agent":
-        harness = DeterministicHarness(
-            sandbox=DockerSandbox(image=args.docker_image)
-        )
-        prepared = harness.prepare_case(
-            args.case_dir, args.runs_root, run_id=args.run_id
-        )
-        database = prepared.layout.run_dir / "checkpoint.sqlite"
-        with SqliteSaver.from_conn_string(str(database)) as saver:
-            result = AgentGraphRunner(
-                OpenAIResponsesModel(
-                    args.model, reasoning_effort=args.reasoning_effort
-                ),
-                harness,
-                saver,
-                memory_store=(
-                    EpisodicMemoryStore(args.memory_db)
-                    if args.memory_db is not None
-                    else None
-                ),
-                memory_limit=args.memory_limit,
-                memory_context_budget_chars=args.memory_context_budget_chars,
-                agent_mode=args.agent_mode,
-            ).start(prepared)
-        _print_agent_result(result)
-        raise SystemExit(
-            0 if result.awaiting_approval or result.status == "verified" else 1
-        )
-    if args.command == "decide-agent":
-        database = _checkpoint_path(args.run_dir)
-        (
-            model,
-            effort,
-            memory_path,
-            memory_limit,
-            memory_context_budget_chars,
-            memory_write_enabled,
-            agent_mode,
-        ) = _configured_agent(args.run_dir)
-        with SqliteSaver.from_conn_string(str(database)) as saver:
-            runner = _openai_runner(
-                model=model,
-                reasoning_effort=effort,
-                image=args.docker_image,
-                saver=saver,
-                memory_path=memory_path,
-                memory_limit=memory_limit,
-                memory_context_budget_chars=memory_context_budget_chars,
-                memory_write_enabled=memory_write_enabled,
-                agent_mode=agent_mode,
-            )
-            result = runner.resume(
-                args.run_dir.resolve().name,
-                ApprovalDecision(action=args.action, feedback=args.feedback),
-            )
-        _print_agent_result(result)
-        raise SystemExit(
-            0 if result.awaiting_approval or result.status == "verified" else 1
-        )
-    if args.command == "agent-status":
-        database = _checkpoint_path(args.run_dir)
-        with SqliteSaver.from_conn_string(str(database)) as saver:
-            result = AgentGraphRunner(
-                ScriptedModel({}), DeterministicHarness(), saver
-            ).inspect(args.run_dir.resolve().name)
-        _print_agent_result(result)
-        return
-    if args.command == "serve-agent":
-        if not 1 <= args.port <= 65535:
-            raise ValueError("port must be between 1 and 65535")
-        database = _checkpoint_path(args.run_dir)
-        (
-            model,
-            effort,
-            memory_path,
-            memory_limit,
-            memory_context_budget_chars,
-            memory_write_enabled,
-            agent_mode,
-        ) = _configured_agent(args.run_dir)
-        with SqliteSaver.from_conn_string(str(database)) as saver:
-            runner = _openai_runner(
-                model=model,
-                reasoning_effort=effort,
-                image=args.docker_image,
-                saver=saver,
-                memory_path=memory_path,
-                memory_limit=memory_limit,
-                memory_context_budget_chars=memory_context_budget_chars,
-                memory_write_enabled=memory_write_enabled,
-                agent_mode=agent_mode,
-            )
-            serve_control_panel(
-                runner, run_id=args.run_dir.resolve().name, port=args.port
-            )
-        return
-    if args.command == "start-benchmark":
-        model = OpenAIResponsesModel(
-            args.model, reasoning_effort=args.reasoning_effort
-        )
-        started = start_benchmark(
-            load_suite(
-                args.suite,
-                case_ids=tuple(args.case_ids) if args.case_ids else None,
-            ),
-            model=model,
-            harness=DeterministicHarness(
-                sandbox=DockerSandbox(image=args.docker_image)
-            ),
-            runs_root=args.runs_root,
-            run_id=args.run_id,
-            memory_store=(
-                EpisodicMemoryStore(args.memory_db)
-                if args.memory_db is not None
-                else None
-            ),
-            memory_limit=args.memory_limit,
-            memory_context_budget_chars=args.memory_context_budget_chars,
-            agent_mode=args.agent_mode,
-            attempts_per_case=args.attempts,
-            resume_existing=args.resume,
-        )
-        print(f"run_dir={started.run_dir}")
-        for result in started.case_results:
-            print(f"{result.case_id}={result.status} {result.run_dir}")
-        raise SystemExit(
-            0 if all(item.awaiting_approval for item in started.case_results) else 1
-        )
-    if args.command == "benchmark-status":
-        summary = summarize_benchmark(args.run_dir)
-        print(f"complete={str(summary['complete']).lower()}")
-        print(f"verified_runs={summary['verified']}/{summary['run_count']}")
-        print(f"pass_at_1={summary['pass_at_1']:.6f}")
-        if summary["pass_at_3"] is not None:
-            print(f"pass_at_3={summary['pass_at_3']:.6f}")
-        print(f"summary={args.run_dir.resolve() / 'summary.md'}")
-        return
-    if args.command == "memory-learn":
-        entry = EpisodicMemoryStore(args.memory_db).record_verified_run(args.run_dir)
-        print(f"entry_id={entry.entry_id}")
-        print(f"case_id={entry.case_id}")
-        print(f"run_id={entry.run_id}")
-        return
-    if args.command == "memory-search":
-        matches = EpisodicMemoryStore(args.memory_db).search(
-            args.query,
-            fixture_id=args.fixture,
-            exclude_case_id=args.exclude_case,
-            limit=args.limit,
-        )
-        print(
-            json.dumps(
-                list(
-                    pack_memory_matches(
-                        matches,
-                        context_budget_chars=args.context_budget_chars,
-                    )
-                ),
-                indent=2,
-                ensure_ascii=False,
-            )
-        )
-        return
-    if args.command == "compare-memory":
-        report = compare_memory_ablation(
-            args.baseline_run,
-            args.memory_run,
-            args.output_dir,
-        )
-        print(
-            f"verified={report['baseline']['verified']}->"
-            f"{report['memory_treatment']['verified']}"
-        )
-        print(f"summary={args.output_dir.resolve() / 'summary.md'}")
-        return
-    if args.command == "compare-configurations":
-        report = compare_agent_configurations(
-            args.single_agent_run,
-            args.no_review_run,
-            args.review_run,
-            output_dir=args.output_dir,
-        )
-        for row in report["configurations"]:
-            print(f"{row['agent_mode']}={row['verified']}/{row['run_count']}")
-        print(f"summary={args.output_dir.resolve() / 'summary.md'}")
-        return
-    if args.command == "compare-preflight":
-        report = compare_preflight_configurations(
-            args.single_agent_run,
-            args.no_review_run,
-            args.review_run,
-            args.memory_run,
-            output_dir=args.output_dir,
-        )
-        for row in report["configurations"]:
-            print(
-                f"{row['configuration']}={row['verified']}/{row['run_count']} "
-                f"pass@1={row['pass_at_1']:.6f} pass@3={row['pass_at_3']:.6f}"
-            )
-        print(f"summary={args.output_dir.resolve() / 'summary.md'}")
-        return
+        if args.command == "fix":
+            limits = _limits(args)
+            if (args.repository / "manifest.yaml").is_file():
+                task = load_task(args.repository)
+                if args.issue or args.issue_file:
+                    task = task.model_copy(update={"issue": args.issue or args.issue_file.read_text(encoding="utf-8")})
+            else:
+                issue = args.issue or (args.issue_file.read_text(encoding="utf-8") if args.issue_file else None)
+                if not issue:
+                    raise ValueError("fix requires --issue or --issue-file for a repository")
+                task = Task(case_id="repair", repo=args.repository.resolve(), issue=issue,
+                            public_test=CommandSpec(argv=tuple(shlex.split(args.test_command))))
+            sandbox = DockerSandbox(args.image)
+            model = openai_model(args.model, limits, args.reasoning_effort)
+            run_dir = prepare_run(task, args.runs_root, limits=limits, model_id=args.model,
+                                  reasoning_effort=args.reasoning_effort, image=args.image)
+            print(f"run_dir={run_dir}")
+            with SqliteSaver.from_conn_string(str(run_dir / "checkpoint.sqlite")) as saver:
+                result = AgentRunner(model, sandbox, saver).start(run_dir)
+            _print(result.model_dump())
+            return 0 if result.status in {"awaiting_review", "exported"} else 1
+        if args.command in {"status", "decide"}:
+            run_dir = args.run_dir.resolve()
+            config = _config(run_dir)
+            sandbox = DockerSandbox(config["sandbox"]["image"])
+            with SqliteSaver.from_conn_string(str(run_dir / "checkpoint.sqlite")) as saver:
+                runner = AgentRunner(None, sandbox, saver)
+                if args.command == "status":
+                    result = runner.inspect(config["run_id"])
+                else:
+                    decision = ApprovalDecision(action=args.action, feedback=args.feedback)
+                    # Approve/reject need no model. A revision (including detected drift)
+                    # continues with exactly the frozen model and budget configuration.
+                    result = runner.inspect(config["run_id"])
+                    if result.status != "awaiting_review":
+                        raise ValueError("only a human-review interrupt can resume; start a new run after other interruptions")
+                    if runner.decision_needs_model(config["run_id"], args.action):
+                        model = openai_model(config["model"], RunLimits.model_validate(config["limits"]),
+                                             config.get("reasoning_effort"))
+                        runner = AgentRunner(model, sandbox, saver)
+                    result = runner.resume(config["run_id"], decision)
+            _print(result.model_dump())
+            return 0 if result.status in {"awaiting_review", "exported", "rejected", "ready_for_grade"} else 1
+        if args.command == "eval":
+            limits = _limits(args)
+            summary = run_eval(load_taskset(args.taskset),
+                               model=openai_model(args.model, limits, args.reasoning_effort),
+                               sandbox=DockerSandbox(args.image), runs_root=args.runs_root,
+                               limits=limits, reasoning_effort=args.reasoning_effort)
+            _print(summary)
+            return 0 if summary["complete"] and summary["success_count"] == summary["task_count"] else 1
+    except (ValueError, SafetyError, SandboxError, ValidationError) as error:
+        parser.exit(2, "error: " + str(sanitize(str(error))) + "\n")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

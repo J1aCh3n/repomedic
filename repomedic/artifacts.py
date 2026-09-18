@@ -4,7 +4,7 @@ import json
 import os
 import re
 
-from repomedic.workspace import resolve_within
+from repomedic.changes import resolve_within
 
 
 _ASSIGNMENT_SECRET = re.compile(
@@ -36,7 +36,7 @@ def redact_text(text: str) -> str:
     return _PROVIDER_TOKEN.sub("[REDACTED]", redacted)
 
 
-def _sanitize(value: Any) -> Any:
+def sanitize(value: Any) -> Any:
     if isinstance(value, str):
         return redact_text(value)
     if isinstance(value, dict):
@@ -44,11 +44,11 @@ def _sanitize(value: Any) -> Any:
         for key, item in value.items():
             text_key = str(key)
             sanitized[text_key] = (
-                "[REDACTED]" if _SENSITIVE_KEY.search(text_key) else _sanitize(item)
+                "[REDACTED]" if _SENSITIVE_KEY.search(text_key) else sanitize(item)
             )
         return sanitized
     if isinstance(value, (list, tuple)):
-        return [_sanitize(item) for item in value]
+        return [sanitize(item) for item in value]
     return value
 
 
@@ -59,23 +59,25 @@ class ArtifactWriter:
 
     def _atomic_write(self, name: str, content: str) -> None:
         path = resolve_within(self.run_dir, name)
-        if path.parent != self.run_dir:
-            raise ValueError("artifacts must be direct children of the run directory")
+        path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_name(f".{path.name}.tmp")
         temporary.write_text(content, encoding="utf-8", newline="\n")
         os.replace(temporary, path)
 
     def write_json(self, name: str, value: Any) -> None:
-        content = json.dumps(_sanitize(value), indent=2, sort_keys=True)
+        content = json.dumps(sanitize(value), indent=2, sort_keys=True)
         self._atomic_write(name, f"{content}\n")
 
     def write_text(self, name: str, content: str) -> None:
         self._atomic_write(name, redact_text(content))
 
     def append_trace(self, event: str, data: dict[str, Any]) -> None:
-        path = resolve_within(self.run_dir, "trace.jsonl")
+        self.append_jsonl("trace.jsonl", {"event": event, "data": data})
+
+    def append_jsonl(self, name: str, value: dict[str, Any]) -> None:
+        path = resolve_within(self.run_dir, name)
         record = json.dumps(
-            _sanitize({"event": event, "data": data}),
+            sanitize(value),
             sort_keys=True,
             separators=(",", ":"),
         )

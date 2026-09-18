@@ -1,56 +1,50 @@
 # Security policy
 
-## Project status
+RepoMedic is experimental, local, single-user software. The operator, Python
+runtime and Docker daemon are trusted. It has not been independently audited
+and is not suitable for hostile code or sensitive repositories as a production
+security boundary.
 
-RepoMedic is experimental software. It executes untrusted repository code only
-through its Docker sandbox, but it has not been independently audited and must
-not be used as a production security boundary or on sensitive repositories.
-Only the latest commit on the default branch is maintained during the current
-`0.1.x` development series.
+## Boundaries
 
-## Reporting a vulnerability
+- Repair models never receive a host shell. Shell commands run only in Docker
+  with no network, read-only root filesystem, non-root UID, dropped capabilities,
+  no-new-privileges, CPU/memory/PID limits, timeout, and a digest-pinned image.
+- Workspace and scratch are the only writable bind mounts. Agent operations
+  never mount evaluator files, the source repository, Git or Docker sockets.
+- Copies exclude `.git`, `.env*` and evaluator entries. Scan/read/edit operations
+  reject unsafe paths, links, junctions, hard-linked files and special entries.
+- Scans check entry and file size bounds before chunked reads. Command output
+  is streamed with a combined cap; overflow and timeout terminate the command.
+- Model-declared scope is an audit/check mechanism. `bash` can write outside
+  scope inside workspace; submission fails until those changes are resolved.
+- Human review occurs after edits and public tests, before a `fix` patch export.
+  Approval is bound to diff and workspace hashes. Source code is never patched.
+- Eval skips review, never exports, and grades a separate copy with restored
+  original tests. Evaluator results do not return to the model.
+- Artifacts redact common credential forms. Patches that would be changed by
+  redaction cannot be exported. Public traces omit private reasoning; encrypted
+  reasoning is retained only in private local checkpoint history.
 
-Use GitHub private vulnerability reporting when it is available. If the
-repository does not have private reporting enabled, open a minimal issue asking
-for a private contact channel; do not include exploit details, credentials, or
-sensitive repository content in a public issue.
+## Limitations
 
-Include the affected revision, platform, reproduction preconditions, expected
-impact, and the smallest safe reproduction you can provide.
+- Writable bind mounts have no disk quota. A command can fill the disk before
+  the post-command scan. Scratch is not scanned as part of a patch.
+- Scans observe file states between tools, not every syscall. Protected files
+  created and removed within one command are not necessarily observable.
+- There is no guarantee of precise recovery after a model/tool/host crash.
+  Only human-review interrupts support resume; start a new run after other crashes.
+- Filesystem checks assume no hostile concurrent host process. They are not a
+  race-proof filesystem capability system.
+- Only text content patches are supported; permission/mode changes are not
+  included. Redaction can miss arbitrary secrets or flag harmless text.
+- SQLite and run artifacts are local, unsigned and unencrypted. Their integrity
+  against a hostile host operator is outside the threat model.
+- Original tests and public evaluator files support reproducibility, not secret
+  holdouts or complete protection against adversarial test manipulation.
+- Dependencies and container vulnerabilities may change. CI audits dependencies
+  but cannot prove safety. No weaker host-execution fallback is provided.
 
-## Security boundaries
-
-RepoMedic is designed around these boundaries:
-
-- Agents receive bounded repository read/edit tools, never a general shell.
-- All edits occur in a disposable workspace below the run directory.
-- Manifest allowlists and forbidden paths are checked before and after tests.
-- Evaluator-only files are mounted separately and are not exposed to Agents.
-- Docker runs without network access, as a non-root user, with a read-only root
-  filesystem, dropped capabilities, `no-new-privileges`, and resource limits.
-- Patch application pauses for explicit human approval.
-- Run artifacts redact common secret forms and do not intentionally store full
-  environment variables, private reasoning, or evaluator source.
-- Episodic-memory writes require verified evidence; retrieved lessons are
-  bounded, provenance-bearing, and treated as untrusted input.
-
-## Known limitations
-
-- Docker Desktop or a compatible Docker Engine is required for real fixture
-  execution. RepoMedic does not provide a weaker host-execution fallback.
-- Redaction is defense in depth, not a guarantee that arbitrary secrets cannot
-  appear in model- or process-generated text.
-- The local approval UI is intended only for loopback use. It is not an
-  authenticated multi-user service.
-- SQLite checkpoints and memory databases are local files without application-
-  level encryption or tenant isolation.
-- Public benchmark evaluator tests and reference patches are reproducibility
-  material, not confidential holdouts.
-- Dependency and container-image vulnerabilities can change after release;
-  Dependabot and the CI `pip-audit` job provide current signals but cannot prove
-  the absence of vulnerabilities. Users must apply their own update and
-  scanning policy.
-
-Do not place secrets, customer data, proprietary source, or private holdout
-material in a RepoMedic run unless the surrounding environment supplies the
-additional controls required for that data.
+Use GitHub private vulnerability reporting where available. Otherwise request a
+private contact channel without publishing credentials or exploit details.
+Include the affected revision, platform, reproduction conditions and impact.
