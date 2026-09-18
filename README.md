@@ -117,9 +117,11 @@ the same recorded model, reasoning configuration and remaining budgets.
 
 Patches support UTF-8 file contents, additions and deletions, including CRLF and
 missing final newlines. Binary changes and file mode changes are not exported.
-If credential redaction would change a patch, checks reject its export rather
-than silently altering code. Redaction can misclassify harmless credential-like
-strings; sensitive repositories are outside the supported threat model.
+Local review diffs and approved `patch.diff` preserve exact contents, including
+code using names such as `token` or `password`. Log redaction does not decide
+whether a patch is valid. Trace and observation files remain sanitized.
+Tool responses retain original workspace text for the model; redaction applies
+to their saved logs, so it does not corrupt code needed for exact replacements.
 
 ## Development evaluation
 
@@ -130,6 +132,9 @@ python -m repomedic eval benchmarks/suites/initial_12.yaml --model YOUR_MODEL_ID
 The twelve existing cases form a development taskset across three Python
 fixtures. Their manifests describe tasks and tests; permissions and execution
 limits have been removed. They are not confidential holdouts.
+The model also receives each manifest's `expected_behavior` specification in
+addition to the issue. Results therefore describe this augmented development
+protocol, not repairs from issue text alone.
 
 Eval skips human review and never exports a patch. When an agent submits a
 checked repair, the grader creates a separate scoring copy, restores the entire
@@ -147,13 +152,26 @@ memory ablation, or workflow comparison in the new runner.
 
 ## Limits, evidence and recovery
 
-Initial, unvalidated defaults: 160 total graph steps, 80 tool calls, 400,000
+Initial, unvalidated defaults: 200 total graph steps, 80 tool calls, 400,000
 cumulative input/output tokens, 60 seconds per command and model request,
 4,000 output tokens per request, 10,000 filesystem entries and 2 MB per file.
 CLI flags set and freeze these values. Graph steps remain cumulative after human
 revision; `recursion_limit` also bounds each LangGraph invocation. Token limits
 are checked between calls and after usage is returned, so a model request may
 overshoot the token threshold; unavailable provider usage cannot be counted.
+The step default allows 80 tool calls plus checks and approval/export overhead;
+custom step and tool budgets remain independently enforced. Three consecutive
+agent replies without a tool call end with `stalled`; a tool call resets the count.
+Invalid tool arguments, including absolute scope paths and blank shell commands,
+return tool errors so the model can correct them. Actual protected or unsafe
+workspace entries still terminate the run as `policy_violation`.
+
+Only standard-library unittest repositories are supported. The scanner does not
+automatically exclude `.venv` or data directories: oversized files or more than
+the configured number of entries reject the copy. Every directory named
+`evaluator` is excluded, including ordinary application directories of that name.
+The grader retains a writable scratch mount, while grading workspace and
+evaluator mounts are read-only.
 
 Command stdout/stderr are captured concurrently with a combined 1 MiB cap;
 output overflow terminates the command. Observations exposed to the model keep
@@ -188,3 +206,5 @@ maintainer reference repairs. Historical evidence and the old implementation are
 available at commit `9154e8ce8ac32a871b339f6be5168f4ec4f3710b`.
 
 The current local validation record is in [docs/validation-v3.md](docs/validation-v3.md).
+That record covers initial commit `da7d9d5`; follow-up fixes are recorded in
+[docs/validation-v3-fixes.md](docs/validation-v3-fixes.md).

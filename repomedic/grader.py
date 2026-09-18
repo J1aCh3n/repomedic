@@ -111,6 +111,7 @@ def run_eval(taskset: Taskset, *, model: ChatModel, sandbox: DockerSandbox,
                       f"- Model: `{model_id}`\n- Tasks: `{summary['task_count']}`\n"
                       f"- Successful: `{summary['success_count']}`\n"
                       f"- Success rate: `{summary['success_rate']:.1%}`\n\n"
+                      "Agent context includes manifest `expected_behavior` in addition to issue text when present.\n\n"
                       + "\n".join(f"- `{row['case_id']}`: `{row['agent_status']}` / `{row['status']}`"
                                     for row in summary["tasks"]) + "\n")
     return summary

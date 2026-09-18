@@ -27,14 +27,14 @@ from repomedic.changes import (
     diff_hash, run_path, scan_tree, tree_hash,
 )
 from repomedic.prompt import AGENT_PROMPT, PROMPT_VERSION, SCOPE_PROMPT
-from repomedic.sandbox import DockerSandbox, MAX_OUTPUT_BYTES
+from repomedic.sandbox import DockerSandbox, MAX_OUTPUT_BYTES, SandboxError
 from repomedic.task import CommandSpec, Contract, Task
 from repomedic.tools import ScopePlan, ToolDenied, make_tools, scan_limits, truncate_output, workspace_snapshot
 
 
 class RunLimits(Contract):
     # Initial defaults, not validated performance/cost recommendations.
-    recursion_limit: int = Field(default=160, ge=6, le=10000)
+    recursion_limit: int = Field(default=200, ge=6, le=10000)
     max_tokens: int = Field(default=400000, ge=1)
     max_tool_calls: int = Field(default=80, ge=1)
     command_timeout: int = Field(default=60, ge=1, le=600)
@@ -70,6 +70,7 @@ class AgentState(TypedDict, total=False):
     graph_steps: int
     model_calls: int
     tool_calls: int
+    consecutive_no_tool_calls: int
     usage: dict[str, int]
     last_command: dict[str, Any]
     check_result: dict[str, Any]
@@ -178,7 +179,8 @@ class AgentRunner:
     def __init__(self, model: ChatModel | None, sandbox: DockerSandbox, checkpointer: Any) -> None:
         self.model, self.sandbox = model, sandbox
         self.tools = make_tools(sandbox)
-        self.tool_node = ToolNode(self.tools, handle_tool_errors=(ToolDenied, ToolInvocationError, ValidationError))
+        self.tool_node = ToolNode(self.tools, handle_tool_errors=(
+            ToolDenied, ToolInvocationError, ValidationError, SandboxError))
         self.scope_model = (model.bind_tools(
             [{"type": "function", "function": {"name": "declare_scope",
               "description": "Declare exact repair files and a brief plan.",
@@ -289,12 +291,18 @@ class AgentRunner:
         if response.tool_calls and state["tool_calls"] >= state["limits"]["max_tool_calls"]:
             return {**updates, "status": "budget_exhausted", "error": "tool call budget exhausted"}
         if not response.tool_calls:
-            return {**updates, "messages": [response, HumanMessage(content=
-                "Continue with a tool call, or call submit when the repair is ready.")]}
+            count = state.get("consecutive_no_tool_calls", 0) + 1
+            if count >= 3:
+                self._writer(state).append_trace("agent_stalled", {"consecutive_no_tool_calls": count})
+                return {**updates, "consecutive_no_tool_calls": count, "messages": [response],
+                        "status": "stalled", "error": "model returned 3 consecutive replies without tool calls"}
+            return {**updates, "consecutive_no_tool_calls": count,
+                    "messages": [response, HumanMessage(content=
+                f"No tool call ({count}/3). Continue with a tool call, or call submit when the repair is ready.")]}
         call = response.tool_calls[0]
         if not call.get("id") or not isinstance(call.get("args"), dict):
             return {**updates, "status": "model_error", "error": "tool call is missing ID or arguments"}
-        return {**updates, "messages": [response], "submitted": False}
+        return {**updates, "messages": [response], "submitted": False, "consecutive_no_tool_calls": 0}
 
     def _tools(self, state: AgentState) -> dict[str, Any]:
         before = workspace_snapshot(state)
@@ -306,11 +314,13 @@ class AgentRunner:
         else:
             updates = dict(output)
         message = updates["messages"][0]
-        observation = redact_text(str(message.content))
+        original = str(message.content).encode("utf-8")[:MAX_OUTPUT_BYTES].decode("utf-8", errors="replace")
+        observation = (json.dumps(sanitize(updates["last_command"])) if "last_command" in updates
+                       else redact_text(str(message.content)))
         bounded = observation.encode("utf-8")[:MAX_OUTPUT_BYTES].decode("utf-8", errors="replace")
         index = state["tool_calls"] + 1
         self._writer(state).write_text(f"observations/{index:04d}.txt", bounded)
-        updates["messages"] = [message.model_copy(update={"content": truncate_output(bounded)})]
+        updates["messages"] = [message.model_copy(update={"content": truncate_output(original)})]
         try:
             after = workspace_snapshot(state)
         except SafetyError as error:
@@ -349,8 +359,6 @@ class AgentRunner:
         except PatchError as error:
             check["patch_error"] = str(error)
             diff = ""
-        if state["mode"] == "fix" and redact_text(diff) != diff:
-            check["patch_error"] = "credential redaction would alter the patch; exact export is unsupported"
         self._writer(state).append_trace("check_completed", check)
         self._writer(state).write_json("test-results.json", check)
         if outside or not result.passed or check.get("patch_error"):
@@ -383,10 +391,10 @@ class AgentRunner:
 
     @staticmethod
     def _review_payload(state: AgentState) -> dict[str, Any]:
-        return sanitize({"summary": redact_text(state.get("summary", "")), "scope": state["scope"],
+        return {**sanitize({"summary": state.get("summary", ""), "scope": state["scope"],
                 "scope_history": state["scope_history"], "check": state["check_result"],
-                "diff": redact_text(state["review_diff"]), "diff_hash": state["review_hash"],
-                "decisions": ["approve", "revise", "reject"]})
+                "diff_hash": state["review_hash"], "decisions": ["approve", "revise", "reject"]}),
+                "diff": state["review_diff"]}
 
     def decision_needs_model(self, run_id: str, action: str) -> bool:
         if action == "revise":
@@ -404,15 +412,13 @@ class AgentRunner:
             return {"status": "approval_error", "error": "export requires explicit human approval"}
         diff = build_diff(run_path(Path(state["run_dir"]), "baseline"),
                           run_path(Path(state["run_dir"]), "workspace"), scan_limits(state))
-        if redact_text(diff) != diff:
-            return {"status": "policy_violation", "error": "credential redaction would alter exported patch"}
         if (diff_hash(diff) != state["approved_hash"]
                 or tree_hash(workspace_snapshot(state)) != state["review_tree_hash"]):
             # The runner checks for drift before resuming; this guards the final boundary too.
             return {"approved_hash": "", "submitted": True, "messages": [HumanMessage(
                 content="Workspace changed after approval; fresh checks and approval are required.")],
                 "status": "running", "review_hash": diff_hash(diff), "review_diff": diff}
-        self._writer(state).write_text("patch.diff", diff)
+        self._writer(state).write_patch(diff)
         self._writer(state).append_trace("patch_exported", {"diff_hash": diff_hash(diff)})
         return {"status": "exported"}
 
@@ -480,6 +486,7 @@ class AgentRunner:
             "baseline_snapshot": config["baseline_snapshot"], "mode": config["mode"],
             "status": "running", "error": "", "scope": [], "scope_history": [],
             "submitted": False, "graph_steps": 0, "model_calls": 0, "tool_calls": 0,
+            "consecutive_no_tool_calls": 0,
             "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
                       "latency_ms": 0, "unreported_calls": 0},
         }

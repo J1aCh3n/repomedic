@@ -98,3 +98,4 @@ class GraderTests(unittest.TestCase):
             self.assertFalse(any(Path(summary["run_dir"]).rglob("patch.diff")))
             saved = json.loads((Path(summary["run_dir"]) / "summary.json").read_text())
             self.assertEqual(saved["success_rate"], 0.5)
+            self.assertIn("expected_behavior", (Path(summary["run_dir"]) / "summary.md").read_text())

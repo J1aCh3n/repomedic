@@ -58,8 +58,8 @@ RepoMedic itself are allowed when the user explicitly authorizes implementation.
   external services from the repair runtime. Live model access is an operator-
   selected command with an explicitly configured model; do not add tracing calls.
 - A `fix` patch requires explicit human approval bound to diff and workspace
-  hashes. Recheck before export. Never silently redact an exported patch into
-  different code; unsupported credential-like patches must fail checks.
+  hashes. Recheck before export. Local review diffs and exported patches preserve
+  exact contents; never use log redaction as a patch validity rule.
 - Do not log secrets, full host environments, evaluator source or private
   reasoning. Opaque encrypted reasoning may be retained only in API checkpoint
   history, not public traces. Redaction is not a guarantee for arbitrary secrets.

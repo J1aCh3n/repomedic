@@ -11,7 +11,7 @@ from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
 from pydantic import Field, model_validator
 
-from repomedic.artifacts import ArtifactWriter, redact_text
+from repomedic.artifacts import ArtifactWriter
 from repomedic.changes import (
     SafetyError, ScanLimits, changed_paths, normalize_path, protected_path,
     resolve_within, run_path, scan_tree,
@@ -145,12 +145,15 @@ def make_tools(sandbox: DockerSandbox) -> list[BaseTool]:
                      state: Annotated[dict[str, Any], InjectedState],
                      tool_call_id: Annotated[str, InjectedToolCallId]) -> Command:
         """Add exact file paths to the scope, with a reason saved for human review."""
-        additions = validate_scope(paths)
-        root = run_path(Path(state["run_dir"]), "workspace")
-        for relative in additions:
-            path = resolve_within(root, relative)
-            if path.is_dir():
-                raise ToolDenied("scope paths must name exact files, not directories")
+        try:
+            additions = validate_scope(paths)
+            root = run_path(Path(state["run_dir"]), "workspace")
+            for relative in additions:
+                path = resolve_within(root, relative)
+                if path.is_dir():
+                    raise ToolDenied("scope paths must name exact files, not directories")
+        except SafetyError as error:
+            raise ToolDenied(str(error)) from error
         expanded = sorted(set(state["scope"]) | set(additions))
         if len(expanded) > 100:
             raise ToolDenied("scope exceeds 100 files")
@@ -176,5 +179,5 @@ def _command_observation(state: dict[str, Any], call_id: str, name: str,
     writer = ArtifactWriter(Path(state["run_dir"]))
     writer.append_trace("command_completed", {"tool": name, **result})
     return Command(update={"last_command": result,
-                           "messages": [ToolMessage(content=redact_text(json.dumps(result)),
+                           "messages": [ToolMessage(content=json.dumps(result),
                                                      tool_call_id=call_id, name=name)]})

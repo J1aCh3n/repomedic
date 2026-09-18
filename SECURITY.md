@@ -22,8 +22,10 @@ security boundary.
   Approval is bound to diff and workspace hashes. Source code is never patched.
 - Eval skips review, never exports, and grades a separate copy with restored
   original tests. Evaluator results do not return to the model.
-- Artifacts redact common credential forms. Patches that would be changed by
-  redaction cannot be exported. Public traces omit private reasoning; encrypted
+- Logs redact common credential forms. Local review diffs and approved patches
+  retain exact contents and may contain sensitive text. Model tool responses
+  also retain workspace text; log redaction does not sanitize model context.
+  Public traces omit private reasoning; encrypted
   reasoning is retained only in private local checkpoint history.
 
 ## Limitations
@@ -37,7 +39,7 @@ security boundary.
 - Filesystem checks assume no hostile concurrent host process. They are not a
   race-proof filesystem capability system.
 - Only text content patches are supported; permission/mode changes are not
-  included. Redaction can miss arbitrary secrets or flag harmless text.
+  included. Log redaction can miss arbitrary secrets or flag harmless text.
 - SQLite and run artifacts are local, unsigned and unencrypted. Their integrity
   against a hostile host operator is outside the threat model.
 - Original tests and public evaluator files support reproducibility, not secret

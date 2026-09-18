@@ -74,7 +74,11 @@ def _config(run_dir: Path) -> dict[str, Any]:
 
 
 def _print(value: Any) -> None:
-    print(json.dumps(sanitize(value), ensure_ascii=False, indent=2))
+    sanitized = sanitize(value)
+    if isinstance(value, dict) and isinstance(value.get("review"), dict):
+        # Local review must show the same bytes whose hash binds patch export.
+        sanitized["review"]["diff"] = value["review"]["diff"]
+    print(json.dumps(sanitized, ensure_ascii=False, indent=2))
 
 
 def main(argv: list[str] | None = None) -> int:

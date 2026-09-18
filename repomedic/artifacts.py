@@ -71,6 +71,10 @@ class ArtifactWriter:
     def write_text(self, name: str, content: str) -> None:
         self._atomic_write(name, redact_text(content))
 
+    def write_patch(self, content: str) -> None:
+        """Preserve the exact locally approved patch; logs remain sanitized."""
+        self._atomic_write("patch.diff", content)
+
     def append_trace(self, event: str, data: dict[str, Any]) -> None:
         self.append_jsonl("trace.jsonl", {"event": event, "data": data})
 

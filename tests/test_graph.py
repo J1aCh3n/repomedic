@@ -8,7 +8,9 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from repomedic.graph import (
     AgentRunner, ApprovalDecision, ModelFailure, RunLimits, ScriptedModel, prepare_run, tool_turn,
 )
-from repomedic.sandbox import CommandResult, DEFAULT_DOCKER_IMAGE
+from repomedic.artifacts import redact_text
+from repomedic.changes import diff_hash
+from repomedic.sandbox import CommandResult, DEFAULT_DOCKER_IMAGE, DockerSandbox
 from repomedic.task import CommandSpec, Task
 from tests.helpers import temporary_directory
 
@@ -142,7 +144,7 @@ class GraphTests(unittest.TestCase):
         examples = [
             (RunLimits(max_tokens=1), [tool_turn("declare_scope", {"paths": ["app.py"], "plan": "fix"}, tokens=1)], "budget_exhausted"),
             (RunLimits(max_tool_calls=1), [scope_turn(), tool_turn("read_file", {"path": "app.py"}), tool_turn("submit", {"summary": "done"})], "budget_exhausted"),
-            (RunLimits(recursion_limit=6), [scope_turn()] + [AIMessage(content="continue")] * 10, "budget_exhausted"),
+            (RunLimits(recursion_limit=6), [scope_turn()] + [tool_turn("read_file", {"path": "app.py"}) for _ in range(10)], "budget_exhausted"),
             (RunLimits(), [ModelFailure("API failed")], "model_error"),
         ]
         for limits, turns, expected in examples:
@@ -228,14 +230,121 @@ class GraphTests(unittest.TestCase):
                 for number in range(1, 5):
                     self.assertIn("Error", (run / f"observations/{number:04d}.txt").read_text())
 
-    def test_credential_redaction_cannot_silently_change_an_exported_patch(self) -> None:
+    def test_review_and_export_preserve_code_matching_secret_redaction(self) -> None:
         with temporary_directory() as directory:
             run = prepared(Path(directory))
+            code = ("def f(token: str):\n    return token\n\n"
+                    "class Holder:\n    def set_token(self, token):\n        self.token = token\n\n"
+                    "def check(password, stored):\n    if password == stored:\n        return True\n\n"
+                    "api_key = 'dummy-secret'")
             turns = [scope_turn(), tool_turn("edit_file", {
-                "path": "app.py", "old": "value = 1", "new": "password = 'dummy-secret'"}),
+                "path": "app.py", "old": "value = 1", "new": code}),
                 tool_turn("submit", {"summary": "done"})]
             with SqliteSaver.from_conn_string(str(run / "checkpoint.sqlite")) as saver:
-                result = AgentRunner(ScriptedModel(turns), FakeSandbox(), saver).start(run)
-                self.assertNotEqual(result.status, "awaiting_review")
+                runner = AgentRunner(ScriptedModel(turns), FakeSandbox(), saver)
+                result = runner.start(run)
+                self.assertEqual(result.status, "awaiting_review")
+                diff = result.review["diff"]
+                self.assertNotEqual(redact_text(diff), diff)
+                self.assertEqual(result.review["diff_hash"], diff_hash(diff))
+                for line in code.splitlines():
+                    if line:
+                        self.assertIn("+" + line, diff)
                 self.assertFalse((run / "patch.diff").exists())
-                self.assertIn("redaction", (run / "test-results.json").read_text())
+                self.assertEqual(runner.resume("run", ApprovalDecision(action="approve")).status, "exported")
+            self.assertEqual((run / "patch.diff").read_bytes(), diff.encode("utf-8"))
+            self.assertNotIn("dummy-secret", (run / "trace.jsonl").read_text())
+            self.assertEqual((Path(directory) / "source/app.py").read_text(), "value = 1\n")
+
+    def test_model_reads_original_code_while_observation_logs_are_redacted(self) -> None:
+        code = "def f(token: str):\n    return token\npassword = 'dummy-secret'\n"
+        class CodePrintingSandbox(FakeSandbox):
+            def exec_command(self, run_dir, command, timeout):
+                return CommandResult(kind="command", argv=("bash", "-c", command), exit_code=0, stdout=code)
+        for name, args in (("read_file", {"path": "app.py"}), ("bash", {"command": "cat app.py"})):
+            with self.subTest(tool=name), temporary_directory() as directory:
+                run = prepared(Path(directory))
+                (run / "workspace/app.py").write_text(code)
+                model = ScriptedModel([scope_turn(), tool_turn(name, args),
+                                       tool_turn("submit", {"summary": "done"})])
+                with SqliteSaver.from_conn_string(str(run / "checkpoint.sqlite")) as saver:
+                    result = AgentRunner(model, CodePrintingSandbox(), saver).start(run)
+                    self.assertEqual(result.status, "awaiting_review")
+                self.assertIn("def f(token: str):", model.calls[-1][-1].content)
+                self.assertIn("dummy-secret", model.calls[-1][-1].content)
+                self.assertNotIn("dummy-secret", (run / "observations/0001.txt").read_text())
+                self.assertNotIn("dummy-secret", (run / "trace.jsonl").read_text())
+
+    def test_invalid_scope_paths_are_recoverable_and_do_not_expand_scope(self) -> None:
+        for path in ("/workspace/other.py", "../private", "C:\\workspace\\other.py"):
+            with self.subTest(path=path), temporary_directory() as directory:
+                run = prepared(Path(directory))
+                model = ScriptedModel([
+                    scope_turn(), tool_turn("update_scope", {"paths": ["other.py", path], "reason": "expand"}),
+                    tool_turn("update_scope", {"paths": ["other.py"], "reason": "corrected relative path"}),
+                    tool_turn("submit", {"summary": "done"})])
+                with SqliteSaver.from_conn_string(str(run / "checkpoint.sqlite")) as saver:
+                    result = AgentRunner(model, FakeSandbox(), saver).start(run)
+                    self.assertEqual(result.status, "awaiting_review")
+                    self.assertEqual(result.review["scope"], ["app.py", "other.py"])
+                    self.assertEqual(len(result.review["scope_history"]), 2)
+                    self.assertEqual(result.review["scope_history"][-1]["reason"], "corrected relative path")
+                denied = model.calls[2][-1]
+                self.assertEqual(denied.status, "error")
+                self.assertIn("relative", denied.content)
+                self.assertEqual(result.usage["tool_calls"], 3)
+
+    def test_whitespace_bash_command_is_recoverable_without_starting_process(self) -> None:
+        with temporary_directory() as directory:
+            run = prepared(Path(directory))
+            class ValidatingSandbox(FakeSandbox):
+                exec_command = DockerSandbox.exec_command
+            model = ScriptedModel([scope_turn(), tool_turn("bash", {"command": " \t\n"}),
+                                   tool_turn("submit", {"summary": "done"})])
+            with SqliteSaver.from_conn_string(str(run / "checkpoint.sqlite")) as saver:
+                result = AgentRunner(model, ValidatingSandbox(), saver).start(run)
+                self.assertEqual(result.status, "awaiting_review")
+            self.assertEqual(model.calls[-1][-1].status, "error")
+            self.assertIn("non-empty", model.calls[-1][-1].content)
+            self.assertEqual(result.usage["tool_calls"], 2)
+
+    def test_three_consecutive_text_replies_stop_without_extra_model_calls(self) -> None:
+        with temporary_directory() as directory:
+            run = prepared(Path(directory))
+            model = ScriptedModel([scope_turn()] + [AIMessage(content="thinking")] * 10)
+            sandbox = FakeSandbox()
+            with SqliteSaver.from_conn_string(str(run / "checkpoint.sqlite")) as saver:
+                result = AgentRunner(model, sandbox, saver).start(run)
+                self.assertEqual(result.status, "stalled")
+                self.assertEqual(result.usage["model_calls"], 4)
+                self.assertEqual(len(model.calls), 4)
+                self.assertEqual(result.usage["tool_calls"], 0)
+                self.assertEqual(json.loads((run / "result.json").read_text())["status"], "stalled")
+            self.assertEqual(sandbox.test_calls, 0)
+            self.assertFalse((run / "patch.diff").exists())
+
+    def test_tool_call_resets_consecutive_text_reply_count(self) -> None:
+        with temporary_directory() as directory:
+            run = prepared(Path(directory))
+            model = ScriptedModel([scope_turn(), AIMessage(content="first"), AIMessage(content="second"),
+                                   tool_turn("read_file", {"path": "app.py"}),
+                                   AIMessage(content="first again"), AIMessage(content="second again"),
+                                   tool_turn("submit", {"summary": "done"})])
+            with SqliteSaver.from_conn_string(str(run / "checkpoint.sqlite")) as saver:
+                result = AgentRunner(model, FakeSandbox(), saver).start(run)
+                self.assertEqual(result.status, "awaiting_review")
+                self.assertEqual(result.usage["model_calls"], 7)
+
+    def test_default_steps_allow_all_tools_then_check_review_and_export(self) -> None:
+        with temporary_directory() as directory:
+            run = prepared(Path(directory))
+            limits = RunLimits()
+            turns = [scope_turn()] + [tool_turn("read_file", {"path": "app.py"})
+                                     for _ in range(limits.max_tool_calls - 1)]
+            turns.append(tool_turn("submit", {"summary": "done"}))
+            with SqliteSaver.from_conn_string(str(run / "checkpoint.sqlite")) as saver:
+                runner = AgentRunner(ScriptedModel(turns), FakeSandbox(), saver)
+                result = runner.start(run)
+                self.assertEqual(result.status, "awaiting_review")
+                self.assertEqual(result.usage["tool_calls"], limits.max_tool_calls)
+                self.assertEqual(runner.resume("run", ApprovalDecision(action="approve")).status, "exported")

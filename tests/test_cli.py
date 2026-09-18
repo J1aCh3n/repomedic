@@ -10,8 +10,8 @@ from unittest.mock import patch
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from repomedic.__main__ import _parser, main
-from repomedic.graph import AgentRunner, ModelFailure, ScriptedModel
-from tests.test_graph import FakeSandbox, prepared, repair_turns
+from repomedic.graph import AgentRunner, ModelFailure, ScriptedModel, tool_turn
+from tests.test_graph import FakeSandbox, prepared, repair_turns, scope_turn
 from tests.helpers import temporary_directory
 
 
@@ -40,6 +40,23 @@ class CliTests(unittest.TestCase):
             with patch("repomedic.__main__.openai_model", side_effect=AssertionError("no API")), redirect_stdout(StringIO()):
                 self.assertEqual(main(["decide", str(run), "approve"]), 0)
             self.assertTrue((run / "patch.diff").exists())
+
+    def test_status_displays_the_exact_diff_that_will_be_exported(self) -> None:
+        with temporary_directory() as directory:
+            run = prepared(Path(directory))
+            turns = [scope_turn(), tool_turn("edit_file", {"path": "app.py", "old": "value = 1",
+                     "new": "def f(token: str):\n    return token"}), tool_turn("submit", {"summary": "done"})]
+            with SqliteSaver.from_conn_string(str(run / "checkpoint.sqlite")) as saver:
+                original = AgentRunner(ScriptedModel(turns), FakeSandbox(), saver).start(run)
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(main(["status", str(run)]), 0)
+            displayed = json.loads(output.getvalue())["review"]["diff"]
+            self.assertEqual(displayed, original.review["diff"])
+            self.assertIn("+def f(token: str):", displayed)
+            with redirect_stdout(StringIO()):
+                self.assertEqual(main(["decide", str(run), "approve"]), 0)
+            self.assertEqual((run / "patch.diff").read_bytes(), displayed.encode("utf-8"))
 
     def test_decide_rejects_a_non_review_run_before_constructing_model(self) -> None:
         with temporary_directory() as directory:
