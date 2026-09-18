@@ -1,12 +1,15 @@
 """LangGraph owns the boundaries; the model chooses actions inside them."""
 
 from collections import deque
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
 from typing import Annotated, Any, Literal, Protocol, TypedDict
 import json
+import os
 import uuid
+from urllib.parse import urlsplit
 
 from langchain_core.exceptions import OutputParserException
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
@@ -19,7 +22,7 @@ from langgraph.prebuilt.tool_node import ToolInvocationError
 from langgraph.types import Command, interrupt
 from langsmith.run_helpers import tracing_context
 from openai import OpenAIError
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_validator
 
 from repomedic.artifacts import ArtifactWriter, redact_text, sanitize
 from repomedic.changes import (
@@ -42,6 +45,28 @@ class RunLimits(Contract):
     max_output_tokens: int = Field(default=4000, ge=1)
     max_entries: int = Field(default=10000, ge=1)
     max_file_bytes: int = Field(default=2000000, ge=1)
+
+
+class ModelSettings(Contract):
+    provider: Literal["openai", "qwen"] = "openai"
+    base_url: str | None = None
+    enable_thinking: bool | None = None
+
+    @model_validator(mode="after")
+    def resolve_options(self) -> "ModelSettings":
+        self.base_url = (self.base_url or (
+            "https://dashscope-intl.aliyuncs.com/compatible-mode/v1" if self.provider == "qwen"
+            else "https://api.openai.com/v1")).rstrip("/")
+        parsed = urlsplit(self.base_url)
+        if (parsed.scheme != "https" or not parsed.hostname or parsed.username is not None
+                or parsed.password is not None or parsed.query or parsed.fragment
+                or any(c.isspace() for c in self.base_url)):
+            raise ValueError("base URL must be HTTPS without credentials, query or fragment")
+        if self.provider == "openai" and self.enable_thinking is not None:
+            raise ValueError("thinking mode is a Qwen option; use reasoning-effort for OpenAI")
+        if self.provider == "qwen" and self.enable_thinking is None:
+            self.enable_thinking = True
+        return self
 
 
 class ApprovalDecision(Contract):
@@ -127,11 +152,42 @@ def tool_turn(name: str, args: dict[str, Any], *, tokens: int = 0) -> AIMessage:
                                      "total_tokens": tokens})
 
 
-def openai_model(model: str, limits: RunLimits, reasoning_effort: str | None = None) -> ChatOpenAI:
+@dataclass(frozen=True)
+class QwenChatModel:
+    client: ChatOpenAI
+
+    @property
+    def model_name(self) -> str:
+        return self.client.model_name
+
+    def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
+        choice = kwargs.get("tool_choice")
+        if choice not in (None, "auto", "none"):
+            kwargs["extra_body"] = {**(self.client.extra_body or {}), "enable_thinking": False}
+        else:
+            kwargs.setdefault("tool_choice", "auto")
+        return self.client.bind_tools(tools, **kwargs)
+
+
+def openai_model(model: str, limits: RunLimits, reasoning_effort: str | None = None, *,
+                 settings: ModelSettings | None = None) -> ChatModel:
+    settings = settings or ModelSettings()
+    if settings.provider == "qwen":
+        if reasoning_effort is not None:
+            raise ValueError("reasoning-effort is an OpenAI option; use thinking mode for Qwen")
+        key = os.getenv("DASHSCOPE_API_KEY")
+        if not key or not key.strip():
+            raise ValueError("Qwen requires DASHSCOPE_API_KEY in the process environment")
+        return QwenChatModel(ChatOpenAI(
+            model=model, api_key=key, base_url=settings.base_url, use_responses_api=False,
+            store=False, max_retries=0, timeout=limits.model_timeout,
+            # This LangChain version renames max_tokens to max_completion_tokens.
+            # Send Qwen's documented parameter through the SDK extra body instead.
+            extra_body={"enable_thinking": settings.enable_thinking, "max_tokens": limits.max_output_tokens}))
     kwargs: dict[str, Any] = {}
     if reasoning_effort is not None:
         kwargs["reasoning"] = {"effort": reasoning_effort}
-    return ChatOpenAI(model=model, use_responses_api=True, output_version="responses/v1",
+    return ChatOpenAI(model=model, base_url=settings.base_url, use_responses_api=True, output_version="responses/v1",
                       store=False, include=["reasoning.encrypted_content"],
                       use_previous_response_id=False, max_retries=0,
                       timeout=limits.model_timeout, max_tokens=limits.max_output_tokens, **kwargs)
@@ -140,8 +196,9 @@ def openai_model(model: str, limits: RunLimits, reasoning_effort: str | None = N
 def prepare_run(task: Task, runs_root: Path, *, limits: RunLimits | None = None,
                 model_id: str = "scripted:test", reasoning_effort: str | None = None,
                 mode: Literal["fix", "eval"] = "fix", run_id: str | None = None,
-                image: str | None = None) -> Path:
+                image: str | None = None, model_settings: ModelSettings | None = None) -> Path:
     limits = limits or RunLimits()
+    model_settings = model_settings or ModelSettings()
     runs_root = runs_root.resolve()
     runs_root.mkdir(parents=True, exist_ok=True)
     task_root = run_path(runs_root, task.case_id)
@@ -164,6 +221,7 @@ def prepare_run(task: Task, runs_root: Path, *, limits: RunLimits | None = None,
         "protocol_version": "tool-loop-v3", "prompt_version": PROMPT_VERSION,
         "case_id": task.case_id, "run_id": identity, "mode": mode,
         "model": model_id, "reasoning_effort": reasoning_effort,
+        "model_settings": model_settings.model_dump(),
         "limits": limits.model_dump(), "task": task.agent_context(),
         "fixture": task.fixture.model_dump() if task.fixture else None,
         "fixture_hash": tree_hash(snapshot), "baseline_snapshot": snapshot,

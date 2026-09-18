@@ -8,7 +8,9 @@ budgets, checkpoints, public tests, human review, and patch export.
 This branch implements the v3 tool-loop design. It replaces the previous role
 workflow, memory, ablation tools, benchmark runner, and approval web UI. Previous
 experiment reports remain historical evidence; they do not measure this agent.
-There is no measured live-model result for the new architecture yet.
+Saved Qwen development runs used a temporary adapter before native provider
+support. They are separate evidence from the offline validation of the current
+integration; see [docs/validation-qwen.md](docs/validation-qwen.md).
 
 ## Setup
 
@@ -23,8 +25,10 @@ python -m repomedic --help
 ```
 
 On POSIX shells, activate with `source .venv/bin/activate`. The model integration
-uses `langchain-openai`, Responses API, stateless message history, and one tool
-call per turn. Live commands require `OPENAI_API_KEY` and an explicit `--model`.
+uses `langchain-openai`, stateless message history, and one tool call per turn.
+The default OpenAI provider uses Responses API and requires `OPENAI_API_KEY`.
+Qwen uses Chat Completions and requires `DASHSCOPE_API_KEY`. Both require an
+explicit `--model`.
 Do not put credentials in the repository copy. LangSmith tracing is disabled in
 the repair model call; RepoMedic does not require a tracing service.
 
@@ -52,6 +56,26 @@ Python unittest command. A development case can be used directly:
 ```powershell
 python -m repomedic fix benchmarks/cases/order_service_001 --model YOUR_MODEL_ID
 ```
+
+For Qwen, set `DASHSCOPE_API_KEY` in the invoking shell without logging it, then:
+
+```powershell
+python -m repomedic fix benchmarks/cases/order_service_001 `
+  --provider qwen --model qwen3.7-plus --model-timeout 180
+```
+
+Qwen defaults to `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`.
+Use `--base-url` for the HTTPS endpoint assigned to your region or workspace;
+keys must match that endpoint. The provider never infers a region from a key or
+falls back to `OPENAI_API_KEY`. Credentials are not saved in run configuration.
+
+Qwen's forced scope tool call disables thinking; the agent loop uses `auto`
+tool choice and enables thinking by default. `--no-thinking` disables agent
+thinking too. `--reasoning-effort` is an OpenAI-only option. Both providers
+disable parallel tool calls and apply the configured output-token limit.
+This integration covers Qwen models supporting non-streaming Chat Completions,
+function tools and the `enable_thinking` parameter; other API/model combinations
+surface their errors rather than silently changing behavior.
 
 The original repository is never edited. The run directory contains a private
 baseline, a writable workspace, and persistent scratch space. `.git`, `.env*`,
@@ -113,7 +137,8 @@ Review includes the diff, summary, scope history and real public test results.
 Approval binds the diff hash and workspace content fingerprint. Drift requires
 fresh checks and approval. Only an approved `fix` run writes `patch.diff`.
 `status`, unchanged approval, and rejection make no model call. Revision resumes
-the same recorded model, reasoning configuration and remaining budgets.
+the same recorded model, provider, endpoint, thinking/reasoning configuration and
+remaining budgets. Older configurations without a provider field use OpenAI.
 
 Patches support UTF-8 file contents, additions and deletions, including CRLF and
 missing final newlines. Binary changes and file mode changes are not exported.
@@ -128,6 +153,10 @@ to their saved logs, so it does not corrupt code needed for exact replacements.
 ```powershell
 python -m repomedic eval benchmarks/suites/initial_12.yaml --model YOUR_MODEL_ID
 ```
+
+For Qwen, add `--provider qwen --model qwen3.7-plus` instead of the model
+placeholder. For example, `--max-tokens 60000 --model-timeout 180` sets a
+per-task cumulative token limit and request timeout, not a suite-wide cost cap.
 
 The twelve existing cases form a development taskset across three Python
 fixtures. Their manifests describe tasks and tests; permissions and execution
@@ -200,7 +229,7 @@ python -m scripts.validate_suite benchmarks/suites/initial_12.yaml
 git diff --check
 ```
 
-Default tests use scripted models, fake sandboxes and a mocked Responses client;
+Default tests use scripted models, fake sandboxes and mocked HTTP/API clients;
 they require no API key or Docker. Docker gates use only disposable copies and
 produce reproducible run artifacts. The tool-loop gate uses an explicitly
 recorded scripted approval to test export; it is not a live model or human review
@@ -213,3 +242,5 @@ That record covers initial commit `da7d9d5`; follow-up fixes are recorded in
 [docs/validation-v3-fixes.md](docs/validation-v3-fixes.md).
 Plain-text command output validation is recorded in
 [docs/validation-command-output.md](docs/validation-command-output.md).
+Qwen provider validation is recorded in
+[docs/validation-qwen.md](docs/validation-qwen.md).

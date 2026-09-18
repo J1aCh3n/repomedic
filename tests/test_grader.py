@@ -3,7 +3,7 @@ import json
 import unittest
 
 from repomedic.grader import grade_run, run_eval
-from repomedic.graph import RunResult, ScriptedModel, prepare_run, tool_turn
+from repomedic.graph import ModelSettings, RunResult, ScriptedModel, prepare_run, tool_turn
 from repomedic.task import CommandSpec, Task, Taskset
 from repomedic.sandbox import CommandResult
 from tests.helpers import temporary_directory
@@ -32,6 +32,20 @@ def task_fixture(root):
 
 
 class GraderTests(unittest.TestCase):
+    def test_eval_records_qwen_settings_in_summary_and_each_case(self) -> None:
+        with temporary_directory() as directory:
+            root = Path(directory)
+            task = task_fixture(root)
+            taskset = Taskset(suite_id="dev", split="development", tasks=(task,), source=root / "dev.yaml")
+            settings = ModelSettings(provider="qwen", enable_thinking=False)
+            summary = run_eval(taskset, model=ScriptedModel([scope_turn(), tool_turn("submit", {"summary": "done"})]),
+                               sandbox=FakeSandbox(), runs_root=root / "evals", model_settings=settings)
+            self.assertEqual(summary["model_settings"], settings.model_dump())
+            for run in (Path(summary["run_dir"]), Path(summary["tasks"][0]["run_dir"])):
+                config = json.loads((run / "config.json").read_text())
+                self.assertEqual(config["model_settings"], settings.model_dump())
+                self.assertNotIn("api_key", config["model_settings"])
+
     def test_restores_tests_in_separate_copy_and_does_not_export(self) -> None:
         with temporary_directory() as directory:
             root = Path(directory)

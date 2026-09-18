@@ -1,6 +1,6 @@
 """CLI for fixing disposable repository copies and development evaluation."""
 
-from argparse import ArgumentParser, Namespace
+from argparse import ArgumentParser, BooleanOptionalAction, Namespace
 from pathlib import Path
 from typing import Any
 import json
@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from repomedic.artifacts import sanitize
 from repomedic.changes import SafetyError, run_path
-from repomedic.graph import AgentRunner, ApprovalDecision, RunLimits, openai_model, prepare_run
+from repomedic.graph import AgentRunner, ApprovalDecision, ModelSettings, RunLimits, openai_model, prepare_run
 from repomedic.grader import run_eval
 from repomedic.prompt import PROMPT_VERSION
 from repomedic.sandbox import DEFAULT_DOCKER_IMAGE, DockerSandbox, SandboxError
@@ -19,7 +19,11 @@ from repomedic.task import CommandSpec, Task, load_task, load_taskset
 
 
 def _execution_options(parser: ArgumentParser) -> None:
-    parser.add_argument("--model", required=True, help="Explicit OpenAI model identifier")
+    parser.add_argument("--model", required=True, help="Explicit model identifier")
+    parser.add_argument("--provider", choices=["openai", "qwen"], default="openai")
+    parser.add_argument("--base-url", help="HTTPS API endpoint; defaults to OpenAI or DashScope international")
+    parser.add_argument("--thinking", dest="enable_thinking", action=BooleanOptionalAction,
+                        default=None, help="Qwen agent thinking mode (default on); scope always disables thinking")
     parser.add_argument("--reasoning-effort", choices=["none", "low", "medium", "high", "xhigh", "max"])
     parser.add_argument("--image", default=DEFAULT_DOCKER_IMAGE)
     defaults = RunLimits()
@@ -55,6 +59,10 @@ def _limits(args: Namespace) -> RunLimits:
     return RunLimits.model_validate({key: getattr(args, key) for key in RunLimits.model_fields})
 
 
+def _model_settings(args: Namespace) -> ModelSettings:
+    return ModelSettings(provider=args.provider, base_url=args.base_url, enable_thinking=args.enable_thinking)
+
+
 def _config(run_dir: Path) -> dict[str, Any]:
     path = run_path(run_dir, "config.json")
     try:
@@ -68,6 +76,7 @@ def _config(run_dir: Path) -> dict[str, Any]:
     if value.get("run_id") != run_dir.name or value.get("mode") not in {"fix", "eval"}:
         raise ValueError("run identity or mode is invalid")
     RunLimits.model_validate(value["limits"])
+    ModelSettings.model_validate(value.get("model_settings", {}))
     if not run_path(run_dir, "checkpoint.sqlite").is_file():
         raise ValueError("run has no checkpoint")
     return value
@@ -87,6 +96,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "fix":
             limits = _limits(args)
+            settings = _model_settings(args)
             if (args.repository / "manifest.yaml").is_file():
                 task = load_task(args.repository)
                 if args.issue or args.issue_file:
@@ -98,9 +108,9 @@ def main(argv: list[str] | None = None) -> int:
                 task = Task(case_id="repair", repo=args.repository.resolve(), issue=issue,
                             public_test=CommandSpec(argv=tuple(shlex.split(args.test_command))))
             sandbox = DockerSandbox(args.image)
-            model = openai_model(args.model, limits, args.reasoning_effort)
+            model = openai_model(args.model, limits, args.reasoning_effort, settings=settings)
             run_dir = prepare_run(task, args.runs_root, limits=limits, model_id=args.model,
-                                  reasoning_effort=args.reasoning_effort, image=args.image)
+                                  reasoning_effort=args.reasoning_effort, image=args.image, model_settings=settings)
             print(f"run_dir={run_dir}")
             with SqliteSaver.from_conn_string(str(run_dir / "checkpoint.sqlite")) as saver:
                 result = AgentRunner(model, sandbox, saver).start(run_dir)
@@ -123,17 +133,19 @@ def main(argv: list[str] | None = None) -> int:
                         raise ValueError("only a human-review interrupt can resume; start a new run after other interruptions")
                     if runner.decision_needs_model(config["run_id"], args.action):
                         model = openai_model(config["model"], RunLimits.model_validate(config["limits"]),
-                                             config.get("reasoning_effort"))
+                                             config.get("reasoning_effort"),
+                                             settings=ModelSettings.model_validate(config.get("model_settings", {})))
                         runner = AgentRunner(model, sandbox, saver)
                     result = runner.resume(config["run_id"], decision)
             _print(result.model_dump())
             return 0 if result.status in {"awaiting_review", "exported", "rejected", "ready_for_grade"} else 1
         if args.command == "eval":
             limits = _limits(args)
+            settings = _model_settings(args)
             summary = run_eval(load_taskset(args.taskset),
-                               model=openai_model(args.model, limits, args.reasoning_effort),
+                               model=openai_model(args.model, limits, args.reasoning_effort, settings=settings),
                                sandbox=DockerSandbox(args.image), runs_root=args.runs_root,
-                               limits=limits, reasoning_effort=args.reasoning_effort)
+                               limits=limits, reasoning_effort=args.reasoning_effort, model_settings=settings)
             _print(summary)
             return 0 if summary["complete"] and summary["success_count"] == summary["task_count"] else 1
     except (ValueError, SafetyError, SandboxError, ValidationError) as error:
