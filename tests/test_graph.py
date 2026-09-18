@@ -10,7 +10,7 @@ from repomedic.graph import (
 )
 from repomedic.artifacts import redact_text
 from repomedic.changes import diff_hash
-from repomedic.sandbox import CommandResult, DEFAULT_DOCKER_IMAGE, DockerSandbox
+from repomedic.sandbox import CommandResult, DEFAULT_DOCKER_IMAGE, DockerSandbox, SandboxError
 from repomedic.task import CommandSpec, Task
 from tests.helpers import temporary_directory
 
@@ -309,6 +309,37 @@ class GraphTests(unittest.TestCase):
             self.assertEqual(model.calls[-1][-1].status, "error")
             self.assertIn("non-empty", model.calls[-1][-1].content)
             self.assertEqual(result.usage["tool_calls"], 2)
+
+    def test_sandbox_configuration_error_stops_as_infrastructure_error(self) -> None:
+        for tool in ("bash", "run_tests"):
+            with self.subTest(tool=tool), temporary_directory() as directory:
+                run = prepared(Path(directory))
+                class BrokenSandbox(FakeSandbox):
+                    def exec_command(self, *args, **kwargs):
+                        raise SandboxError("invalid bind mount directory")
+                    run_tests = exec_command
+                args = {"command": "ls"} if tool == "bash" else {}
+                model = ScriptedModel([scope_turn(), tool_turn(tool, args),
+                                       tool_turn("submit", {"summary": "unreachable"})])
+                with SqliteSaver.from_conn_string(str(run / "checkpoint.sqlite")) as saver:
+                    result = AgentRunner(model, BrokenSandbox(), saver).start(run)
+                self.assertEqual(result.status, "infrastructure_error")
+                self.assertIn("invalid bind mount directory", result.error)
+                self.assertEqual(len(model.calls), 2)
+                self.assertEqual(json.loads((run / "result.json").read_text())["status"],
+                                 "infrastructure_error")
+
+    def test_sandbox_error_during_submission_check_is_recorded(self) -> None:
+        with temporary_directory() as directory:
+            run = prepared(Path(directory))
+            class BrokenTests(FakeSandbox):
+                def run_tests(self, *args, **kwargs):
+                    raise SandboxError("test cwd and evaluator mount disagree")
+            model = ScriptedModel([scope_turn(), tool_turn("submit", {"summary": "done"})])
+            with SqliteSaver.from_conn_string(str(run / "checkpoint.sqlite")) as saver:
+                result = AgentRunner(model, BrokenTests(), saver).start(run)
+            self.assertEqual(result.status, "infrastructure_error")
+            self.assertTrue((run / "final-report.md").exists())
 
     def test_three_consecutive_text_replies_stop_without_extra_model_calls(self) -> None:
         with temporary_directory() as directory:

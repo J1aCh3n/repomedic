@@ -27,7 +27,8 @@ python -m repomedic --help
 On POSIX shells, activate with `source .venv/bin/activate`. The model integration
 uses `langchain-openai`, stateless message history, and one tool call per turn.
 The default OpenAI provider uses Responses API and requires `OPENAI_API_KEY`.
-Qwen uses Chat Completions and requires `DASHSCOPE_API_KEY`. Both require an
+Qwen uses Chat Completions and reads `DASHSCOPE_API_KEY`, falling back to
+`QWEN_API_KEY`; when both are set, `DASHSCOPE_API_KEY` wins. Both require an
 explicit `--model`.
 Do not put credentials in the repository copy. LangSmith tracing is disabled in
 the repair model call; RepoMedic does not require a tracing service.
@@ -57,7 +58,8 @@ Python unittest command. A development case can be used directly:
 python -m repomedic fix benchmarks/cases/order_service_001 --model YOUR_MODEL_ID
 ```
 
-For Qwen, set `DASHSCOPE_API_KEY` in the invoking shell without logging it, then:
+For Qwen, set `DASHSCOPE_API_KEY` (or `QWEN_API_KEY`) in the invoking shell
+without logging it, then:
 
 ```powershell
 python -m repomedic fix benchmarks/cases/order_service_001 `
@@ -193,7 +195,9 @@ custom step and tool budgets remain independently enforced. Three consecutive
 agent replies without a tool call end with `stalled`; a tool call resets the count.
 Invalid tool arguments, including absolute scope paths and blank shell commands,
 return tool errors so the model can correct them. Actual protected or unsafe
-workspace entries still terminate the run as `policy_violation`.
+workspace entries still terminate the run as `policy_violation`. Sandbox
+configuration faults the model cannot correct, such as an invalid bind mount,
+terminate immediately as `infrastructure_error` instead of consuming the budget.
 
 Only standard-library unittest repositories are supported. The scanner does not
 automatically exclude `.venv` or data directories: oversized files or more than

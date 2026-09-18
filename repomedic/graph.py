@@ -169,15 +169,20 @@ class QwenChatModel:
         return self.client.bind_tools(tools, **kwargs)
 
 
+QWEN_KEY_VARIABLES = ("DASHSCOPE_API_KEY", "QWEN_API_KEY")
+
+
 def openai_model(model: str, limits: RunLimits, reasoning_effort: str | None = None, *,
                  settings: ModelSettings | None = None) -> ChatModel:
     settings = settings or ModelSettings()
     if settings.provider == "qwen":
         if reasoning_effort is not None:
             raise ValueError("reasoning-effort is an OpenAI option; use thinking mode for Qwen")
-        key = os.getenv("DASHSCOPE_API_KEY")
-        if not key or not key.strip():
-            raise ValueError("Qwen requires DASHSCOPE_API_KEY in the process environment")
+        # DashScope's documented name wins; QWEN_API_KEY is an accepted fallback.
+        key = next((value for name in QWEN_KEY_VARIABLES
+                    if (value := os.getenv(name)) and value.strip()), None)
+        if key is None:
+            raise ValueError("Qwen requires DASHSCOPE_API_KEY or QWEN_API_KEY in the process environment")
         return QwenChatModel(ChatOpenAI(
             model=model, api_key=key, base_url=settings.base_url, use_responses_api=False,
             store=False, max_retries=0, timeout=limits.model_timeout,
@@ -238,7 +243,7 @@ class AgentRunner:
         self.model, self.sandbox = model, sandbox
         self.tools = make_tools(sandbox)
         self.tool_node = ToolNode(self.tools, handle_tool_errors=(
-            ToolDenied, ToolInvocationError, ValidationError, SandboxError))
+            ToolDenied, ToolInvocationError, ValidationError))
         self.scope_model = (model.bind_tools(
             [{"type": "function", "function": {"name": "declare_scope",
               "description": "Declare exact repair files and a brief plan.",
@@ -276,6 +281,10 @@ class AgentRunner:
                 result = function(working)
             except SafetyError as error:
                 result = {"status": "policy_violation", "error": str(error)}
+            except SandboxError as error:
+                # Sandbox configuration faults are not model-correctable; stop instead of
+                # letting the agent retry until its budget is exhausted.
+                result = {"status": "infrastructure_error", "error": str(error)}
             return {"graph_steps": working["graph_steps"], **result}
         return node
 

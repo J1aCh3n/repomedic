@@ -88,6 +88,9 @@ def make_tools(sandbox: DockerSandbox) -> list[BaseTool]:
              state: Annotated[dict[str, Any], InjectedState],
              tool_call_id: Annotated[str, InjectedToolCallId]) -> Command:
         """Run a shell command in a fresh, network-disabled Docker container."""
+        # Model-correctable input is rejected here; remaining SandboxErrors are infrastructure faults.
+        if not command.strip() or "\x00" in command:
+            raise ToolDenied("command must be non-empty and contain no null bytes")
         result = sandbox.exec_command(Path(state["run_dir"]), command,
                                       state["limits"]["command_timeout"])
         return _command_observation(state, tool_call_id, "bash", result.model_dump(mode="json"))

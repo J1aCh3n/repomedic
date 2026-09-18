@@ -58,11 +58,25 @@ class QwenTests(unittest.TestCase):
         self.assertNotIn("private-qwen-reasoning", json.dumps(second.model_dump()))
 
     def test_requires_dashscope_key_and_rejects_openai_reasoning_options(self) -> None:
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "unused-openai-key"}, clear=True):
-            with self.assertRaisesRegex(ValueError, "DASHSCOPE_API_KEY"):
+        for environment in ({"OPENAI_API_KEY": "unused-openai-key"},
+                            {"DASHSCOPE_API_KEY": " ", "QWEN_API_KEY": "\t"}):
+            with self.subTest(environment=list(environment)), \
+                    patch.dict(os.environ, environment, clear=True), \
+                    self.assertRaisesRegex(ValueError, "DASHSCOPE_API_KEY or QWEN_API_KEY"):
                 graph.openai_model("qwen3.7-plus", graph.RunLimits(), settings=graph.ModelSettings(provider="qwen"))
         with self.assertRaisesRegex(ValueError, "reasoning"):
             graph.openai_model("qwen3.7-plus", graph.RunLimits(), "high", settings=graph.ModelSettings(provider="qwen"))
+
+    def test_qwen_key_fallback_and_precedence(self) -> None:
+        cases = (({"QWEN_API_KEY": "qwen-key"}, "qwen-key"),
+                 ({"DASHSCOPE_API_KEY": "dashscope-key", "QWEN_API_KEY": "qwen-key"}, "dashscope-key"),
+                 ({"DASHSCOPE_API_KEY": "  ", "QWEN_API_KEY": "qwen-key"}, "qwen-key"))
+        for environment, expected in cases:
+            with self.subTest(environment=list(environment)), \
+                    patch.dict(os.environ, environment, clear=True):
+                model = graph.openai_model("qwen3.7-plus", graph.RunLimits(),
+                                           settings=graph.ModelSettings(provider="qwen"))
+                self.assertEqual(model.client.openai_api_key.get_secret_value(), expected)
 
     def test_settings_validate_endpoint_and_thinking_options(self) -> None:
         settings = graph.ModelSettings(provider="qwen", base_url="https://example.invalid/compatible-mode/v1/", enable_thinking=False)
