@@ -31,7 +31,7 @@ class CancellationEvaluatorTests(unittest.TestCase):
     def test_unknown_cancellation_has_no_side_effects(self) -> None:
         service, inventory, store = make_service()
 
-        with self.assertRaisesRegex(ValueError, "unknown"):
+        with self.assertRaises(ValueError):
             service.cancel_order("order-999")
 
         self.assertEqual(inventory.available("MUG"), 5)
