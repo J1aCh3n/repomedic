@@ -13,8 +13,15 @@ The current architecture is the v3 LangGraph tool loop. The previous role
 workflow, benchmark, ablation, memory and web UI modules have been removed.
 Historical experiment reports describe the old commit, not the new agent.
 The twelve tasks are a development dataset, never an untouched holdout.
-Implement only the authorized phase; do not scaffold future subagents, memory,
-provider systems, databases, web interfaces or external benchmarks.
+`--agents explorer` adds one read-only explorer subagent invoked through the
+`delegate_explore` tool; `single` remains the unchanged baseline. Do not claim a
+multi-agent benefit until a matched single-vs-explorer comparison measures it.
+Implement only the authorized phase; do not scaffold further subagents (such as a
+reviewer), memory, databases, web interfaces or external benchmarks.
+
+A subagent must have its own state type and context, its own tool allowlist and
+budget, a structured handoff the harness can check, and usage merged into the run.
+Read-only subagents enforce read-only access through the sandbox mount, not prompts.
 
 ## Engineering rules
 

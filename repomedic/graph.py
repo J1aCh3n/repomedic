@@ -4,15 +4,13 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from time import monotonic
 from typing import Annotated, Any, Literal, Protocol, TypedDict
 import json
 import os
 import uuid
 from urllib.parse import urlsplit
 
-from langchain_core.exceptions import OutputParserException
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 from langgraph.errors import GraphRecursionError
 from langgraph.graph import END, START, StateGraph
@@ -21,7 +19,6 @@ from langgraph.prebuilt import ToolNode
 from langgraph.prebuilt.tool_node import ToolInvocationError
 from langgraph.types import Command, interrupt
 from langsmith.run_helpers import tracing_context
-from openai import OpenAIError
 from pydantic import Field, ValidationError, model_validator
 
 from repomedic.artifacts import ArtifactWriter, redact_text, sanitize
@@ -29,7 +26,9 @@ from repomedic.changes import (
     PatchError, SafetyError, ScanLimits, build_diff, changed_paths, copy_repository,
     diff_hash, run_path, scan_tree, tree_hash,
 )
-from repomedic.prompt import AGENT_PROMPT, PROMPT_VERSION, SCOPE_PROMPT
+from repomedic.explorer import Explorer, make_delegate_tool
+from repomedic.model_call import ModelFailure, invoke_model, zero_usage
+from repomedic.prompt import AGENT_PROMPT, DELEGATION_PROMPT, PROMPT_VERSION, SCOPE_PROMPT
 from repomedic.sandbox import DockerSandbox, MAX_OUTPUT_BYTES, SandboxError
 from repomedic.task import CommandSpec, Contract, Task
 from repomedic.tools import ScopePlan, ToolDenied, make_tools, scan_limits, truncate_output, workspace_snapshot
@@ -45,6 +44,14 @@ class RunLimits(Contract):
     max_output_tokens: int = Field(default=4000, ge=1)
     max_entries: int = Field(default=10000, ge=1)
     max_file_bytes: int = Field(default=2000000, ge=1)
+    # Explorer sub-budgets (explorer mode only). Its tokens also count against max_tokens.
+    max_delegations: int = Field(default=5, ge=1, le=50)
+    explorer_max_tool_calls: int = Field(default=15, ge=1, le=200)
+    explorer_max_tokens: int = Field(default=60000, ge=1)
+
+
+AgentMode = Literal["single", "explorer"]
+AGENT_MODES: tuple[str, ...] = ("single", "explorer")
 
 
 class ModelSettings(Contract):
@@ -103,6 +110,7 @@ class AgentState(TypedDict, total=False):
     review_hash: str
     review_tree_hash: str
     approved_hash: str
+    delegations: list[dict[str, Any]]
 
 
 class RunResult(Contract):
@@ -113,10 +121,6 @@ class RunResult(Contract):
     error: str = ""
     review: dict[str, Any] | None = None
     usage: dict[str, int]
-
-
-class ModelFailure(RuntimeError):
-    """An explicit scripted/model protocol failure, never a fabricated fallback."""
 
 
 class ChatModel(Protocol):
@@ -201,7 +205,8 @@ def openai_model(model: str, limits: RunLimits, reasoning_effort: str | None = N
 def prepare_run(task: Task, runs_root: Path, *, limits: RunLimits | None = None,
                 model_id: str = "scripted:test", reasoning_effort: str | None = None,
                 mode: Literal["fix", "eval"] = "fix", run_id: str | None = None,
-                image: str | None = None, model_settings: ModelSettings | None = None) -> Path:
+                image: str | None = None, model_settings: ModelSettings | None = None,
+                agents: AgentMode = "single") -> Path:
     limits = limits or RunLimits()
     model_settings = model_settings or ModelSettings()
     runs_root = runs_root.resolve()
@@ -224,7 +229,7 @@ def prepare_run(task: Task, runs_root: Path, *, limits: RunLimits | None = None,
     writer = ArtifactWriter(run_dir)
     writer.write_json("config.json", {
         "protocol_version": "tool-loop-v3", "prompt_version": PROMPT_VERSION,
-        "case_id": task.case_id, "run_id": identity, "mode": mode,
+        "case_id": task.case_id, "run_id": identity, "mode": mode, "agents": agents,
         "model": model_id, "reasoning_effort": reasoning_effort,
         "model_settings": model_settings.model_dump(),
         "limits": limits.model_dump(), "task": task.agent_context(),
@@ -239,9 +244,17 @@ def prepare_run(task: Task, runs_root: Path, *, limits: RunLimits | None = None,
 
 
 class AgentRunner:
-    def __init__(self, model: ChatModel | None, sandbox: DockerSandbox, checkpointer: Any) -> None:
-        self.model, self.sandbox = model, sandbox
+    def __init__(self, model: ChatModel | None, sandbox: DockerSandbox, checkpointer: Any,
+                 agents: AgentMode = "single") -> None:
+        if agents not in AGENT_MODES:
+            raise ValueError(f"unknown agents mode: {agents!r}")
+        self.model, self.sandbox, self.agents = model, sandbox, agents
         self.tools = make_tools(sandbox)
+        self.agent_prompt = AGENT_PROMPT
+        if agents == "explorer":
+            # The explorer is just another tool from the main graph's point of view.
+            self.tools.append(make_delegate_tool(Explorer(model, sandbox)))
+            self.agent_prompt = AGENT_PROMPT + DELEGATION_PROMPT
         self.tool_node = ToolNode(self.tools, handle_tool_errors=(
             ToolDenied, ToolInvocationError, ValidationError))
         self.scope_model = (model.bind_tools(
@@ -290,41 +303,9 @@ class AgentRunner:
 
     def _call(self, state: AgentState, model: Any, instructions: str,
               messages: list[BaseMessage]) -> tuple[AIMessage | None, dict[str, Any]]:
-        if state["usage"]["total_tokens"] >= state["limits"]["max_tokens"]:
-            return None, {"status": "budget_exhausted", "error": "token budget exhausted"}
-        if model is None:
-            raise ModelFailure("a model is required to execute the agent")
-        started = monotonic()
-        try:
-            response = model.invoke([SystemMessage(content=instructions), *messages])
-        except (OpenAIError, OutputParserException, ValidationError, ModelFailure) as error:
-            latency = round((monotonic() - started) * 1000)
-            usage = {**state["usage"], "latency_ms": state["usage"]["latency_ms"] + latency,
-                     "unreported_calls": state["usage"].get("unreported_calls", 0) + 1}
-            self._writer(state).append_trace("model_failed", {"error": str(error), "latency_ms": latency})
-            return None, {"status": "model_error", "error": redact_text(str(error)),
-                          "model_calls": state["model_calls"] + 1, "usage": usage}
-        if not isinstance(response, AIMessage):
-            return None, {"status": "model_error", "error": "model did not return AIMessage"}
-        usage = dict(state["usage"])
-        metadata = response.usage_metadata
-        if metadata:
-            for key in ("input_tokens", "output_tokens", "total_tokens"):
-                usage[key] += metadata.get(key, 0)
-        else:
-            usage["unreported_calls"] = usage.get("unreported_calls", 0) + 1
-        usage["latency_ms"] += round((monotonic() - started) * 1000)
-        result: dict[str, Any] = {"usage": usage, "model_calls": state["model_calls"] + 1}
-        # Keep opaque reasoning in checkpoint history; never print it in public artifacts.
-        self._writer(state).append_trace("model_completed", {
-            "text": response.text, "tool_calls": response.tool_calls,
-            "usage": metadata, "latency_ms": round((monotonic() - started) * 1000),
-        })
-        if usage["total_tokens"] >= state["limits"]["max_tokens"]:
-            return None, {**result, "status": "budget_exhausted", "error": "token budget exhausted"}
-        if response.invalid_tool_calls or len(response.tool_calls) > 1:
-            return None, {**result, "status": "model_error", "error": "invalid or multiple tool calls"}
-        return response, result
+        return invoke_model(self._writer(state), model, instructions, messages,
+                            usage=state["usage"], model_calls=state["model_calls"],
+                            max_tokens=state["limits"]["max_tokens"], agent="main")
 
     def _scope(self, state: AgentState) -> dict[str, Any]:
         initial = HumanMessage(content=json.dumps({"issue": state["issue"],
@@ -352,7 +333,7 @@ class AgentRunner:
     def _agent(self, state: AgentState) -> dict[str, Any]:
         if state["tool_calls"] >= state["limits"]["max_tool_calls"]:
             return {"status": "budget_exhausted", "error": "tool call budget exhausted"}
-        response, updates = self._call(state, self.agent_model, AGENT_PROMPT, state["messages"])
+        response, updates = self._call(state, self.agent_model, self.agent_prompt, state["messages"])
         if response is None:
             return updates
         if response.tool_calls and state["tool_calls"] >= state["limits"]["max_tool_calls"]:
@@ -489,9 +470,18 @@ class AgentRunner:
         self._writer(state).append_trace("patch_exported", {"diff_hash": diff_hash(diff)})
         return {"status": "exported"}
 
+    @staticmethod
+    def _usage_summary(state: AgentState) -> dict[str, int]:
+        delegations = state.get("delegations", [])
+        # usage totals already include explorer spending; explorer_* shows its share.
+        return {**state["usage"], "model_calls": state["model_calls"],
+                "tool_calls": state["tool_calls"], "graph_steps": state["graph_steps"],
+                "delegations": len(delegations),
+                "explorer_tokens": sum(item["tokens"] for item in delegations),
+                "explorer_tool_calls": sum(item["tool_calls"] for item in delegations)}
+
     def _terminal(self, state: AgentState) -> dict[str, Any]:
-        usage = {**state["usage"], "model_calls": state["model_calls"],
-                 "tool_calls": state["tool_calls"], "graph_steps": state["graph_steps"]}
+        usage = self._usage_summary(state)
         writer = self._writer(state)
         writer.write_json("usage.json", usage)
         writer.write_json("result.json", {"status": state["status"], "error": state.get("error", ""),
@@ -543,6 +533,9 @@ class AgentRunner:
     def start(self, run_dir: Path) -> RunResult:
         config = json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
         run_id = config["run_id"]
+        if config.get("agents", "single") != self.agents:
+            raise ValueError(f"run was prepared for agents={config.get('agents', 'single')!r}, "
+                             f"runner uses {self.agents!r}")
         if self.graph.get_state(self._config(run_id)).values:
             raise ValueError("run already has state; only approval-paused runs can resume")
         state: AgentState = {
@@ -553,9 +546,7 @@ class AgentRunner:
             "baseline_snapshot": config["baseline_snapshot"], "mode": config["mode"],
             "status": "running", "error": "", "scope": [], "scope_history": [],
             "submitted": False, "graph_steps": 0, "model_calls": 0, "tool_calls": 0,
-            "consecutive_no_tool_calls": 0,
-            "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
-                      "latency_ms": 0, "unreported_calls": 0},
+            "consecutive_no_tool_calls": 0, "delegations": [], "usage": zero_usage(),
         }
         self._invoke(state, run_id, config["limits"]["recursion_limit"])
         return self.inspect(run_id)
@@ -586,5 +577,4 @@ class AgentRunner:
                          status="awaiting_review" if awaiting else state["status"],
                          error=state.get("error", ""),
                          review=self._review_payload(state) if awaiting else None,
-                         usage={**state["usage"], "model_calls": state["model_calls"],
-                                "tool_calls": state["tool_calls"], "graph_steps": state["graph_steps"]})
+                         usage=self._usage_summary(state))

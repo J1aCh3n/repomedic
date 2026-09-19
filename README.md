@@ -150,6 +150,42 @@ whether a patch is valid. Trace and observation files remain sanitized.
 Tool responses retain original workspace text for the model; redaction applies
 to their saved logs, so it does not corrupt code needed for exact replacements.
 
+## Explorer subagent (`--agents explorer`)
+
+The default `--agents single` is the one-agent baseline above, with an unchanged
+prompt. `--agents explorer` adds one tool, `delegate_explore(question)`, which runs
+a separate read-only explorer agent compiled as its own LangGraph subgraph:
+
+```text
+main agent --delegate_explore(question)--> explorer subgraph (own state and context)
+                                            read_file, bash (read-only), report
+main agent <--checked report (ToolMessage)--+
+```
+
+- **Isolated context:** the explorer receives only the issue, the question and the
+  file list, never the main conversation. The main agent receives only the report.
+- **Read-only by construction:** explorer shell commands mount `/workspace`
+  read-only in Docker (`/scratch` stays writable). The harness also compares
+  workspace fingerprints before and after each delegation; any change is a
+  `policy_violation`. Because it cannot write, a delegation is safe to rerun and
+  the subgraph has no checkpoint.
+- **Checked handoff:** reports are structured (`answer`, `findings` with path and
+  line range, `root_cause_hypothesis`, `confidence`, `open_questions`). The harness
+  marks each finding `verified` or `UNVERIFIED` depending on whether the cited file
+  and lines exist. This checks locations, not whether the claim is correct.
+- **Budgets:** `--explorer-max-tool-calls` (15), `--explorer-max-tokens` (60,000)
+  and `--max-delegations` (5) bound each delegation. Explorer tokens and model calls
+  are merged into the run totals, so `--max-tokens` still bounds the whole run; a
+  delegation never receives more than the run has left. At the tool limit or 75% of
+  its token budget the explorer gets one final chance to report what it has.
+- **Evidence:** trace events carry `agent` (`main`/`explorer`) and `delegation_id`;
+  `delegation_started`/`delegation_finished` record question, budgets, status,
+  usage and checked findings. Usage adds `delegations`, `explorer_tokens` and
+  `explorer_tool_calls`. The mode is frozen in `config.json` and reused on resume.
+
+Whether to delegate is the main agent's decision. Defaults are initial,
+unvalidated values, and no success-rate benefit over `single` has been measured.
+
 ## Development evaluation
 
 ```powershell

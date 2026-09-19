@@ -82,6 +82,29 @@ def _file(state: dict[str, Any], path: str, *, editing: bool = False) -> Path:
         raise ToolDenied(str(error)) from error
 
 
+def read_lines(state: dict[str, Any], path: str) -> list[str]:
+    """Workspace file lines through the same path/size checks as the read_file tool."""
+    try:
+        return _file(state, path).read_text(encoding="utf-8").splitlines()
+    except UnicodeDecodeError as error:
+        raise ToolDenied("file is not UTF-8 text") from error
+
+
+@tool
+def read_file(path: str,
+              state: Annotated[dict[str, Any], InjectedState],
+              start: Annotated[int | None, Field(ge=1)] = None,
+              end: Annotated[int | None, Field(ge=1)] = None) -> str:
+    """Read a UTF-8 workspace file, with line numbers and optional inclusive range."""
+    # Module level: it needs no sandbox and is shared by the main agent and the explorer.
+    lines = read_lines(state, path)
+    first, last = start or 1, end or len(lines)
+    if last < first:
+        raise ToolDenied("end must be at least start")
+    return "\n".join(f"{index}: {line}" for index, line in enumerate(lines, 1)
+                     if first <= index <= last)
+
+
 def make_tools(sandbox: DockerSandbox) -> list[BaseTool]:
     @tool
     def bash(command: Annotated[str, Field(min_length=1, max_length=20000)],
@@ -94,22 +117,6 @@ def make_tools(sandbox: DockerSandbox) -> list[BaseTool]:
         result = sandbox.exec_command(Path(state["run_dir"]), command,
                                       state["limits"]["command_timeout"])
         return _command_observation(state, tool_call_id, "bash", result.model_dump(mode="json"))
-
-    @tool
-    def read_file(path: str,
-                  state: Annotated[dict[str, Any], InjectedState],
-                  start: Annotated[int | None, Field(ge=1)] = None,
-                  end: Annotated[int | None, Field(ge=1)] = None) -> str:
-        """Read a UTF-8 workspace file, with line numbers and optional inclusive range."""
-        try:
-            lines = _file(state, path).read_text(encoding="utf-8").splitlines()
-        except UnicodeDecodeError as error:
-            raise ToolDenied("file is not UTF-8 text") from error
-        first, last = start or 1, end or len(lines)
-        if last < first:
-            raise ToolDenied("end must be at least start")
-        return "\n".join(f"{index}: {line}" for index, line in enumerate(lines, 1)
-                         if first <= index <= last)
 
     @tool
     def edit_file(path: str,

@@ -167,10 +167,13 @@ class DockerSandbox:
                 })
         return result.model_copy(update={"kind": kind, "argv": argv})
 
-    def exec_command(self, run_dir: Path, command: str, timeout: int) -> CommandResult:
+    def exec_command(self, run_dir: Path, command: str, timeout: int, *,
+                     readonly: bool = False) -> CommandResult:
+        """readonly mounts /workspace read-only; /scratch stays writable either way."""
         if not command.strip() or "\x00" in command:
             raise SandboxError("command must be non-empty and contain no null bytes")
-        return self._run(run_dir=run_dir, argv=("bash", "-c", command), timeout=timeout)
+        return self._run(run_dir=run_dir, argv=("bash", "-c", command), timeout=timeout,
+                         readonly=readonly)
 
     def run_tests(self, run_dir: Path, spec: CommandSpec, timeout: int, *,
                   workspace_name: str = "workspace",

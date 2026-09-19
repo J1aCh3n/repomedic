@@ -11,7 +11,9 @@ from pydantic import ValidationError
 
 from repomedic.artifacts import sanitize
 from repomedic.changes import SafetyError, run_path
-from repomedic.graph import AgentRunner, ApprovalDecision, ModelSettings, RunLimits, openai_model, prepare_run
+from repomedic.graph import (
+    AGENT_MODES, AgentRunner, ApprovalDecision, ModelSettings, RunLimits, openai_model, prepare_run,
+)
 from repomedic.grader import run_eval
 from repomedic.prompt import PROMPT_VERSION
 from repomedic.sandbox import DEFAULT_DOCKER_IMAGE, DockerSandbox, SandboxError
@@ -26,6 +28,8 @@ def _execution_options(parser: ArgumentParser) -> None:
                         default=None, help="Qwen agent thinking mode (default on); scope always disables thinking")
     parser.add_argument("--reasoning-effort", choices=["none", "low", "medium", "high", "xhigh", "max"])
     parser.add_argument("--image", default=DEFAULT_DOCKER_IMAGE)
+    parser.add_argument("--agents", choices=AGENT_MODES, default="single",
+                        help="single: one agent; explorer: main agent may delegate read-only exploration")
     defaults = RunLimits()
     for name in RunLimits.model_fields:
         parser.add_argument("--" + name.replace("_", "-"), type=int, default=getattr(defaults, name))
@@ -77,6 +81,8 @@ def _config(run_dir: Path) -> dict[str, Any]:
         raise ValueError("run identity or mode is invalid")
     RunLimits.model_validate(value["limits"])
     ModelSettings.model_validate(value.get("model_settings", {}))
+    if value.get("agents", "single") not in AGENT_MODES:
+        raise ValueError("run uses an unknown agents mode")
     if not run_path(run_dir, "checkpoint.sqlite").is_file():
         raise ValueError("run has no checkpoint")
     return value
@@ -110,10 +116,11 @@ def main(argv: list[str] | None = None) -> int:
             sandbox = DockerSandbox(args.image)
             model = openai_model(args.model, limits, args.reasoning_effort, settings=settings)
             run_dir = prepare_run(task, args.runs_root, limits=limits, model_id=args.model,
-                                  reasoning_effort=args.reasoning_effort, image=args.image, model_settings=settings)
+                                  reasoning_effort=args.reasoning_effort, image=args.image, model_settings=settings,
+                                  agents=args.agents)
             print(f"run_dir={run_dir}")
             with SqliteSaver.from_conn_string(str(run_dir / "checkpoint.sqlite")) as saver:
-                result = AgentRunner(model, sandbox, saver).start(run_dir)
+                result = AgentRunner(model, sandbox, saver, agents=args.agents).start(run_dir)
             _print(result.model_dump())
             return 0 if result.status in {"awaiting_review", "exported"} else 1
         if args.command in {"status", "decide"}:
@@ -121,7 +128,9 @@ def main(argv: list[str] | None = None) -> int:
             config = _config(run_dir)
             sandbox = DockerSandbox(config["sandbox"]["image"])
             with SqliteSaver.from_conn_string(str(run_dir / "checkpoint.sqlite")) as saver:
-                runner = AgentRunner(None, sandbox, saver)
+                # Resume with the frozen configuration, never with current CLI flags.
+                agents = config.get("agents", "single")
+                runner = AgentRunner(None, sandbox, saver, agents=agents)
                 if args.command == "status":
                     result = runner.inspect(config["run_id"])
                 else:
@@ -135,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
                         model = openai_model(config["model"], RunLimits.model_validate(config["limits"]),
                                              config.get("reasoning_effort"),
                                              settings=ModelSettings.model_validate(config.get("model_settings", {})))
-                        runner = AgentRunner(model, sandbox, saver)
+                        runner = AgentRunner(model, sandbox, saver, agents=agents)
                     result = runner.resume(config["run_id"], decision)
             _print(result.model_dump())
             return 0 if result.status in {"awaiting_review", "exported", "rejected", "ready_for_grade"} else 1
@@ -145,7 +154,8 @@ def main(argv: list[str] | None = None) -> int:
             summary = run_eval(load_taskset(args.taskset),
                                model=openai_model(args.model, limits, args.reasoning_effort, settings=settings),
                                sandbox=DockerSandbox(args.image), runs_root=args.runs_root,
-                               limits=limits, reasoning_effort=args.reasoning_effort, model_settings=settings)
+                               limits=limits, reasoning_effort=args.reasoning_effort, model_settings=settings,
+                               agents=args.agents)
             _print(summary)
             return 0 if summary["complete"] and summary["success_count"] == summary["task_count"] else 1
     except (ValueError, SafetyError, SandboxError, ValidationError) as error:

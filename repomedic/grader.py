@@ -11,7 +11,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 
 from repomedic.artifacts import ArtifactWriter
 from repomedic.changes import ScanLimits, copy_repository, run_path, scan_tree, tree_hash
-from repomedic.graph import AgentRunner, ChatModel, ModelSettings, RunLimits, RunResult, prepare_run
+from repomedic.graph import AgentMode, AgentRunner, ChatModel, ModelSettings, RunLimits, RunResult, prepare_run
 from repomedic.prompt import PROMPT_VERSION
 from repomedic.sandbox import DockerSandbox
 from repomedic.task import Task, Taskset
@@ -72,7 +72,8 @@ def grade_run(task: Task, result: RunResult, sandbox: DockerSandbox,
 
 def run_eval(taskset: Taskset, *, model: ChatModel, sandbox: DockerSandbox,
              runs_root: Path, limits: RunLimits | None = None,
-             reasoning_effort: str | None = None, model_settings: ModelSettings | None = None) -> dict[str, Any]:
+             reasoning_effort: str | None = None, model_settings: ModelSettings | None = None,
+             agents: AgentMode = "single") -> dict[str, Any]:
     limits = limits or RunLimits()
     model_settings = model_settings or ModelSettings()
     runs_root = runs_root.resolve()
@@ -87,7 +88,7 @@ def run_eval(taskset: Taskset, *, model: ChatModel, sandbox: DockerSandbox,
     summary: dict[str, Any] = {"run_dir": str(run_dir), "suite_id": taskset.suite_id,
                               "protocol_version": "tool-loop-eval-v3", "prompt_version": PROMPT_VERSION,
                               "reasoning_effort": reasoning_effort,
-                              "model_settings": model_settings.model_dump(),
+                              "model_settings": model_settings.model_dump(), "agents": agents,
                               "split": taskset.split, "task_count": len(taskset.tasks),
                               "complete": False, "success_count": 0, "success_rate": 0.0,
                               "model": model_id, "tasks": []}
@@ -95,15 +96,15 @@ def run_eval(taskset: Taskset, *, model: ChatModel, sandbox: DockerSandbox,
                                        "prompt_version": PROMPT_VERSION,
                                        "taskset": str(taskset.source), "model": model_id,
                                        "reasoning_effort": reasoning_effort,
-                                       "model_settings": model_settings.model_dump(),
+                                       "model_settings": model_settings.model_dump(), "agents": agents,
                                        "limits": limits.model_dump(),
                                        "case_ids": [task.case_id for task in taskset.tasks]})
     for task in taskset.tasks:
         case_run = prepare_run(task, run_dir / "tasks", limits=limits, model_id=model_id,
                                reasoning_effort=reasoning_effort, mode="eval", image=sandbox.image,
-                               model_settings=model_settings)
+                               model_settings=model_settings, agents=agents)
         with SqliteSaver.from_conn_string(str(case_run / "checkpoint.sqlite")) as saver:
-            result = AgentRunner(model, sandbox, saver).start(case_run)
+            result = AgentRunner(model, sandbox, saver, agents=agents).start(case_run)
         score = grade_run(task, result, sandbox, limits)
         summary["tasks"].append({**score, "run_dir": str(case_run)})
         summary["success_count"] = sum(row["success"] for row in summary["tasks"])
@@ -112,7 +113,7 @@ def run_eval(taskset: Taskset, *, model: ChatModel, sandbox: DockerSandbox,
     summary["complete"] = True
     writer.write_json("summary.json", summary)
     writer.write_text("summary.md", f"# Development evaluation: {taskset.suite_id}\n\n"
-                      f"- Model: `{model_id}`\n- Tasks: `{summary['task_count']}`\n"
+                      f"- Model: `{model_id}`\n- Agents: `{agents}`\n- Tasks: `{summary['task_count']}`\n"
                       f"- Provider: `{model_settings.provider}`\n- API endpoint: `{model_settings.base_url}`\n"
                       f"- Agent thinking: `{model_settings.enable_thinking}` (Qwen scope thinking is disabled)\n"
                       f"- Successful: `{summary['success_count']}`\n"
