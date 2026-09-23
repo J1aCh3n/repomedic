@@ -1,159 +1,28 @@
-# RepoMedic benchmarks
+# Development tasks
 
-The current benchmark implementation includes a twelve-case development suite,
-deterministic harness, and Agent graph. The preserved v1 staged result and its
-failure analysis are in `results/initial_8_20260905.md`; the current graph uses
-the remediated v2 prompt and protocol.
+The twelve Python repair cases are development data for the v3 tool loop. They
+are not confidential or untouched holdouts. Manifests no longer contain an edit
+allowlist or limits; scope comes from the model and budgets from the harness.
 
-## Layout
-
-- `fixtures/order_service/`, `fixtures/task_scheduler/`, and
-  `fixtures/document_pipeline/` are clean baselines.
-- `cases/<case-id>/repo/` is the faulty or feature-incomplete repository visible
-  to an Agent.
-- `cases/<case-id>/evaluator/` must not be copied or mounted into an Agent
-  workspace.
-- `cases/<case-id>/manifest.yaml` defines each case contract.
-- `suites/order_service_4.yaml` preserves the first measured checkpoint.
-- `suites/initial_8.yaml` freezes the expanded eight-case suite.
-- `suites/initial_12.yaml` freezes the complete initial benchmark dataset.
-- `suites/preflight_6.yaml` freezes the reduced configuration-ablation subset.
-
-## Four-case development suite
-
-| Case | Category | Target behavior |
-| --- | --- | --- |
-| `order_service_001` | local logic bug | Inclusive bulk-discount threshold |
-| `order_service_002` | cross-module contract bug | Stable `order-N` string IDs |
-| `order_service_003` | edge/regression bug | Failed reservations are atomic |
-| `order_service_004` | small feature | Safe order cancellation across three modules |
-
-All four are development cases. They may be used to debug the runner or prompts
-and therefore must not later be relabeled as untouched holdout evidence.
-
-## Eight-case development suite
-
-The second fixture adds the same four task categories without modifying the
-first measured checkpoint.
-
-| Case | Category | Target behavior |
-| --- | --- | --- |
-| `task_scheduler_005` | local logic bug | Allow adjacent half-open task intervals |
-| `task_scheduler_006` | cross-module contract bug | Normalize parsed timestamps to UTC |
-| `task_scheduler_007` | edge/regression bug | Failed requests do not consume task IDs |
-| `task_scheduler_008` | small feature | Atomic rescheduling across policy, scheduler, and storage |
-
-All eight cases remain development cases. Validate both clean fixtures, all
-faulty/incomplete inputs, and all maintainer reference repairs with:
-
-```powershell
-python -m scripts.validate_suite benchmarks/suites/initial_8.yaml
-```
-
-The command writes its evidence below `runs/suite-gates/initial_8/<run-id>/`.
-All current manifests reserve at least 43 bounded repository operations. That
-minimum covers the schema's maximum initial investigation and two direct repair
-iterations; repeated Reviewer replanning remains bounded by the same cap.
-
-## Twelve-case development suite
-
-The third fixture completes the planned four-category matrix.
-
-| Case | Category | Target behavior |
-| --- | --- | --- |
-| `document_pipeline_009` | local logic bug | Collapse mixed whitespace runs |
-| `document_pipeline_010` | cross-module contract bug | Preserve source paths across loading and export |
-| `document_pipeline_011` | edge/regression bug | Failed conversions leave destinations unchanged |
-| `document_pipeline_012` | small feature | Optional uppercase-title conversion across three layers |
-
-All twelve cases remain development cases. Validate all three clean fixtures,
-all faulty or incomplete inputs, and every maintainer reference repair with:
+- `fixtures/`: three clean Python repositories.
+- `cases/<id>/repo/`: faulty or feature-incomplete Agent-visible input.
+- `cases/<id>/evaluator/`: maintainer reference repair and evaluator tests,
+  never mounted for Agent operations.
+- `cases/<id>/manifest.yaml`: issue, fixture identity and test contracts.
+- `suites/initial_12.yaml`: all twelve development tasks; smaller development
+  subsets remain usable with the taskset loader.
+- `results/`: historical workflow evidence for commit
+  `9154e8ce8ac32a871b339f6be5168f4ec4f3710b`, not v3 measurements.
 
 ```powershell
 python -m scripts.validate_suite benchmarks/suites/initial_12.yaml
+python -m repomedic eval benchmarks/suites/initial_12.yaml --model YOUR_MODEL_ID
 ```
 
-The command writes evidence below `runs/suite-gates/initial_12/<run-id>/`.
+The fixture gate spends no model credits. Live eval runs one independent repair
+per task, skips human review and never exports patches. The grader restores
+original `tests/` in a separate copy, runs public plus evaluator tests and saves
+all task outcomes. `summary.json` is the source for success rate; failures count
+in its denominator. Reference-patch equality is never a success criterion.
 
-## Six-case configuration ablation subset
-
-`preflight_6` reduces approval load while preserving two cases from each
-fixture and coverage of all four task categories:
-
-| Case | Category |
-| --- | --- |
-| `order_service_001` | local logic bug |
-| `order_service_004` | small feature |
-| `task_scheduler_006` | cross-module contract bug |
-| `task_scheduler_008` | small feature |
-| `document_pipeline_010` | cross-module contract bug |
-| `document_pipeline_011` | edge/regression bug |
-
-This is a stratified development ablation, not a complete `initial_12` result
-or holdout evidence. With three attempts across four configurations it contains
-72 case-runs. Validate its fixture contracts with:
-
-```powershell
-python -m scripts.validate_suite benchmarks/suites/preflight_6.yaml
-```
-
-The completed live comparison is documented in
-[`results/preflight_6_ablation_20260905.md`](results/preflight_6_ablation_20260905.md).
-Its 71/72 aggregate verified result is development evidence only; the one
-failure was a deterministic edit-application error in the single-agent arm.
-
-With Docker Desktop running, reproduce every faulty state and reference repair:
-
-```powershell
-python -m scripts.validate_suite benchmarks/suites/order_service_4.yaml
-```
-
-The four-case command writes a generated `summary.json` and `summary.md` below
-`runs/suite-gates/order_service_4/<run-id>/`. A valid gate observes
-`tests_failed` for every input case and `verified` after every maintainer
-reference repair.
-
-The fixture uses only the Python standard library. The commands below use
-`python`; substitute the path to a Python 3.11+ executable if it is not on
-`PATH`.
-
-## Verify the clean baseline
-
-From `benchmarks/fixtures/order_service`:
-
-```powershell
-python -m unittest discover -s tests -v
-python -m order_service.app MUG 4
-```
-
-The tests should pass and the example order total should be `90.00`.
-
-## Reproduce the faulty case
-
-From `benchmarks/cases/order_service_001/repo`:
-
-```powershell
-python -m unittest discover -s tests -v
-```
-
-Exactly the threshold test should fail: the faulty implementation returns
-`100.00` instead of `90.00`.
-
-From `benchmarks/cases/order_service_001`:
-
-```powershell
-python -m unittest discover -s evaluator/hidden_tests -v
-```
-
-Exactly the evaluator's alternate threshold test should fail. The evaluator
-defaults to testing this case's `repo/`. To validate a repaired disposable
-copy, set `REPOMEDIC_REPO_UNDER_TEST` to that copy's absolute path before
-running the evaluator command.
-
-`evaluator/reference.patch` is maintainer-only evidence for the fixture gate.
-It is not an exact-patch scoring target and must not be exposed to the Agent.
-
-The harness copies only `repo/` into a disposable run workspace. Evaluator tests
-are mounted into a separate Docker container path only during deterministic
-evaluation, while the repaired workspace is mounted read-only. See the root
-README for harness commands and security limits.
+Do not pool v3 eval with old pass@1/pass@3, Reviewer or memory ablation results.

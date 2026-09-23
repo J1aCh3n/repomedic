@@ -7,6 +7,15 @@ from tests.helpers import temporary_directory
 
 
 class ArtifactTests(unittest.TestCase):
+    def test_approved_patch_preserves_exact_bytes_and_logs_still_redact(self) -> None:
+        with temporary_directory() as temp_dir:
+            writer = ArtifactWriter(Path(temp_dir))
+            patch = "+def f(token: str):\r\n+password = 'dummy-secret'\r\n"
+            writer.write_patch(patch)
+            writer.write_text("observations/0001.txt", patch)
+            self.assertEqual((Path(temp_dir) / "patch.diff").read_bytes(), patch.encode("utf-8"))
+            self.assertNotIn("dummy-secret", (Path(temp_dir) / "observations/0001.txt").read_text())
+
     def test_redacts_common_secret_forms(self) -> None:
         text = (
             "OPENAI_API_KEY=abc123 "

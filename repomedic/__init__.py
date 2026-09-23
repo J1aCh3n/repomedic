@@ -1,6 +1,1 @@
-"""Deterministic infrastructure for RepoMedic repair experiments."""
-
-from repomedic.harness import DeterministicHarness
-
-__all__ = ["DeterministicHarness"]
-
+"""A LangGraph coding agent with a deterministic sandbox, checks and approval."""
